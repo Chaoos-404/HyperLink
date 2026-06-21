@@ -3,6 +3,7 @@ import { once } from 'node:events';
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_PORT = 44777;
 export const DEFAULT_BLOCK_SIZE = 16 * 1024 * 1024;
+export const LEGACY_BLOCK_SIZE = 4 * 1024 * 1024;
 export const DEFAULT_PIPELINE_WINDOW = 4;
 export const MAX_HEADER_BYTES = 64 * 1024;
 

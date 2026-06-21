@@ -4,7 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { FrameReader, PROTOCOL_VERSION, writeFrame } from './protocol.js';
+import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, FrameReader, PROTOCOL_VERSION, writeFrame } from './protocol.js';
 import { FALLBACK_HASH_ALGORITHM, chooseHashAlgorithm, createFastHash, hashBuffer, initHashing } from './hash.js';
 import { advertisePeer } from './discovery.js';
 
@@ -17,6 +17,8 @@ export async function startReceiver({
   token,
   advertise = true,
   overwrite = false,
+  diagnostics = false,
+  diagnosticsIntervalMs = 1000,
   onEvent = () => {}
 } = {}) {
   await initHashing();
@@ -25,7 +27,7 @@ export async function startReceiver({
   const server = net.createServer((socket) => {
     socket.setNoDelay(true);
     socket.setKeepAlive(true, 5000);
-    receiveConnection(socket, { dest, token, overwrite, onEvent }).catch((error) => {
+    receiveConnection(socket, { dest, token, overwrite, diagnostics, diagnosticsIntervalMs, onEvent }).catch((error) => {
       onEvent({ type: 'error', message: error.message });
       socket.destroy(error);
     });
@@ -50,7 +52,14 @@ export async function startReceiver({
   };
 }
 
-export async function receiveConnection(socket, { dest, token, overwrite = false, onEvent = () => {} }) {
+export async function receiveConnection(socket, {
+  dest,
+  token,
+  overwrite = false,
+  diagnostics = false,
+  diagnosticsIntervalMs = 1000,
+  onEvent = () => {}
+}) {
   await initHashing();
   const reader = new FrameReader(socket);
   let current = null;
@@ -78,7 +87,10 @@ export async function receiveConnection(socket, { dest, token, overwrite = false
         type: 'hello_ack',
         version: PROTOCOL_VERSION,
         hashAlgorithm,
-        supportsPipelining: true
+        supportsPipelining: true,
+        maxBlockSize: DEFAULT_BLOCK_SIZE,
+        recommendedPipelineWindow: DEFAULT_PIPELINE_WINDOW,
+        protocolFeatures: ['queued-frame-reader', 'xxh64', 'pipelined-acks']
       });
       continue;
     }
@@ -114,7 +126,16 @@ export async function receiveConnection(socket, { dest, token, overwrite = false
         size: header.size,
         mode: header.mode,
         mtimeMs: header.mtimeMs,
-        hash: createFastHash(hashAlgorithm)
+        hash: createFastHash(hashAlgorithm),
+        stats: {
+          startedAt: performance.now(),
+          lastReportAt: performance.now(),
+          blocks: 0,
+          bytes: 0,
+          hashMs: 0,
+          diskWriteMs: 0,
+          ackWriteMs: 0
+        }
       };
       await writeFrame(socket, { type: 'file_ready', path: header.path });
       onEvent({ type: 'file_start', path: header.path, size: header.size });
@@ -128,18 +149,27 @@ export async function receiveConnection(socket, { dest, token, overwrite = false
         continue;
       }
 
+      const hashStarted = performance.now();
       const actualHash = hashBuffer(payload, hashAlgorithm);
+      current.stats.hashMs += performance.now() - hashStarted;
       if (actualHash !== header.hash) {
         await writeFrame(socket, { type: 'block_nack', path: current.path, index: header.index, message: 'Block hash mismatch' });
         continue;
       }
 
+      const writeStarted = performance.now();
       await current.handle.write(payload);
+      current.stats.diskWriteMs += performance.now() - writeStarted;
       current.hash.update(payload);
       current.bytes += payload.length;
       current.nextIndex += 1;
+      current.stats.blocks += 1;
+      current.stats.bytes += payload.length;
+      const ackStarted = performance.now();
       await writeFrame(socket, { type: 'block_ack', path: current.path, index: header.index });
+      current.stats.ackWriteMs += performance.now() - ackStarted;
       onEvent({ type: 'bytes', path: current.path, bytes: payload.length });
+      maybeReportDiagnostics({ diagnostics, diagnosticsIntervalMs, current, final: false, onEvent });
       continue;
     }
 
@@ -161,6 +191,7 @@ export async function receiveConnection(socket, { dest, token, overwrite = false
       }
       await writeFrame(socket, { type: 'file_end_ack', path: current.path, hash: digest });
       onEvent({ type: 'file_done', path: current.path, bytes: current.bytes });
+      maybeReportDiagnostics({ diagnostics, diagnosticsIntervalMs: 0, current, final: true, onEvent });
       current = null;
       continue;
     }
@@ -203,4 +234,25 @@ async function availableBytes(dir) {
   } catch {
     return null;
   }
+}
+
+function maybeReportDiagnostics({ diagnostics, diagnosticsIntervalMs, current, final, onEvent }) {
+  if (!diagnostics) return;
+  const now = performance.now();
+  if (!final && now - current.stats.lastReportAt < diagnosticsIntervalMs) return;
+  current.stats.lastReportAt = now;
+  const elapsedSeconds = Math.max((now - current.stats.startedAt) / 1000, 0.001);
+  onEvent({
+    type: 'diagnostic',
+    side: 'receiver',
+    final,
+    path: current.path,
+    elapsedSeconds,
+    blocks: current.stats.blocks,
+    bytes: current.stats.bytes,
+    throughputBytesPerSecond: current.stats.bytes / elapsedSeconds,
+    hashMs: current.stats.hashMs,
+    diskWriteMs: current.stats.diskWriteMs,
+    ackWriteMs: current.stats.ackWriteMs
+  });
 }

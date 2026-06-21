@@ -6,6 +6,7 @@ import { Progress, formatBytes } from './progress.js';
 import { startReceiver } from './receiver.js';
 import { sendPaths } from './sender.js';
 import { startGui } from './gui.js';
+import { printDoctorReport, runDoctor } from './doctor.js';
 
 main().catch((error) => {
   console.error(`boltbridge: ${error.message}`);
@@ -41,6 +42,12 @@ async function main() {
     return;
   }
 
+  if (command === 'doctor') {
+    const report = await runDoctor({ host: options.host });
+    printDoctorReport(report);
+    return;
+  }
+
   if (command === 'serve') {
     const progress = new Progress({ label: 'receive' });
     const receiver = await startReceiver({
@@ -50,14 +57,22 @@ async function main() {
       token: options.token,
       advertise: options.discovery !== false,
       overwrite: Boolean(options.overwrite),
+      diagnostics: Boolean(options.diagnose || options.verbose),
       onEvent: (event) => {
-        if (event.type === 'file_start') progress.setFile(event.path);
+        if (event.type === 'file_start') {
+          progress.reset();
+          progress.setFile(event.path);
+        }
         if (event.type === 'bytes') progress.add(event.bytes);
         if (event.type === 'done') progress.done();
         if (event.type === 'error') console.error(event.message);
+        if (event.type === 'peer' && (options.diagnose || options.verbose)) {
+          console.error(`peer agent=${event.agent ?? 'unknown'} remote=${event.remote ?? 'unknown'}`);
+        }
+        if (event.type === 'diagnostic') printDiagnostic(event);
       }
     });
-    console.log(`BoltBridge receiver listening on port ${receiver.port}; writing to ${options.dest ?? 'received'}`);
+    console.log(`HyperLink receiver listening on port ${receiver.port}; writing to ${options.dest ?? 'received'}`);
     await waitForever();
     return;
   }
@@ -73,9 +88,17 @@ async function main() {
       blockSize: parseSize(options.blockSize ?? options['block-size'], DEFAULT_BLOCK_SIZE),
       pipelineWindow: numberOption(options.window ?? options.pipelineWindow, DEFAULT_PIPELINE_WINDOW),
       retries: numberOption(options.retries, 2),
+      diagnostics: Boolean(options.diagnose || options.verbose),
       onEvent: (event) => {
         if (event.type === 'file_start') progress.setFile(event.path);
         if (event.type === 'bytes') progress.add(event.bytes);
+        if (event.type === 'negotiated' && (options.diagnose || options.verbose)) {
+          console.error(
+            `negotiated hash=${event.hashAlgorithm} block=${formatBytes(event.blockSize)} window=${event.pipelineWindow}` +
+            `${event.legacyPeer ? ' legacy-peer=true' : ''}`
+          );
+        }
+        if (event.type === 'diagnostic') printDiagnostic(event);
       }
     });
     progress.done();
@@ -85,7 +108,7 @@ async function main() {
 
   if (command === 'gui') {
     const gui = await startGui({ port: numberOption(options.port, 44880) });
-    console.log(`BoltBridge GUI: ${gui.url}`);
+    console.log(`HyperLink GUI: ${gui.url}`);
     await waitForever();
     return;
   }
@@ -148,17 +171,37 @@ function waitForever() {
 }
 
 function printHelp() {
-  console.log(`BoltBridge
+  console.log(`HyperLink
 
 Usage:
-  boltbridge serve [--dest received] [--port ${DEFAULT_PORT}] [--token secret] [--overwrite]
-  boltbridge send <file-or-dir...> [--host address] [--port ${DEFAULT_PORT}] [--bind link-local-address] [--window ${DEFAULT_PIPELINE_WINDOW}]
-  boltbridge discover [--timeout 3000]
-  boltbridge interfaces
-  boltbridge gui [--port 44880]
+  hyperlink serve [--dest received] [--port ${DEFAULT_PORT}] [--token secret] [--overwrite] [--diagnose]
+  hyperlink send <file-or-dir...> [--host address] [--port ${DEFAULT_PORT}] [--bind link-local-address] [--window ${DEFAULT_PIPELINE_WINDOW}] [--diagnose]
+  hyperlink discover [--timeout 3000]
+  hyperlink interfaces
+  hyperlink doctor [--host address]
+  hyperlink gui [--port 44880]
 
 Notes:
   - Prefer link-local addresses such as 169.254.x.x or fe80::/10 for wired point-to-point links.
   - Transfers are streamed; files are not indexed into memory before sending.
   - Blocks are pipelined, hashed, and acknowledged; use --window 1 for stop-and-wait retry mode.`);
+}
+
+function printDiagnostic(event) {
+  const parts = [
+    event.side ?? 'sender',
+    event.final ? 'final' : 'live',
+    `path=${event.path}`,
+    `rate=${formatBytes(event.throughputBytesPerSecond)}/s`,
+    `hash=${(event.hashMs ?? 0).toFixed(1)}ms`
+  ];
+
+  if (event.writeMs !== undefined) parts.push(`socketWrite=${event.writeMs.toFixed(1)}ms`);
+  if (event.ackWaitMs !== undefined) parts.push(`ackWait=${event.ackWaitMs.toFixed(1)}ms`);
+  if (event.diskWriteMs !== undefined) parts.push(`diskWrite=${event.diskWriteMs.toFixed(1)}ms`);
+  if (event.ackWriteMs !== undefined) parts.push(`ackWrite=${event.ackWriteMs.toFixed(1)}ms`);
+  if (event.blocksAcked !== undefined) parts.push(`acked=${event.blocksAcked}`);
+  if (event.blocks !== undefined) parts.push(`blocks=${event.blocks}`);
+
+  console.error(parts.join(' '));
 }

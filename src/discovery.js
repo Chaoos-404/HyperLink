@@ -3,7 +3,7 @@ import multicastdns from 'multicast-dns';
 import { DEFAULT_PORT } from './protocol.js';
 import { listInterfaces } from './interfaces.js';
 
-const SERVICE = '_boltbridge._tcp.local';
+const SERVICE = '_hyperlink._tcp.local';
 
 export function advertisePeer({ port = DEFAULT_PORT, name = os.hostname(), tokenRequired = false } = {}) {
   const mdns = multicastdns({ multicast: true, loopback: true });
@@ -107,5 +107,5 @@ function scopedAddress(record) {
 }
 
 function sanitizeName(name) {
-  return String(name).replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 48) || 'boltbridge';
+  return String(name).replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 48) || 'hyperlink';
 }

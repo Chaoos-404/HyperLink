@@ -1,6 +1,6 @@
-# BoltBridge Architecture
+# HyperLink Architecture
 
-BoltBridge is currently a Node.js implementation of the Project BoltBridge draft. The code is organized so the transport can later be replaced with QUIC or a native Rust core without changing the CLI or GUI surface.
+HyperLink is currently a Node.js foundation implementation of the Project BoltBridge draft. The code is organized so the transport can later be replaced with QUIC or a native Rust core without changing the CLI or GUI surface.
 
 ## Implemented
 
@@ -13,6 +13,7 @@ BoltBridge is currently a Node.js implementation of the Project BoltBridge draft
 - Block acknowledgements and retry on failed block verification.
 - Safe receive paths that reject traversal outside the destination folder.
 - A local browser GUI that can discover peers and drag/drop files to a selected receiver.
+- Send/receive diagnostics for identifying whether large transfer time is dominated by hashing, socket backpressure, acknowledgement latency, or receiver disk writes.
 
 ## Intentional Gaps
 
