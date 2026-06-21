@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BoltBridge</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <h1>BoltBridge</h1>
+          <p id="status">Scanning for peers...</p>
+        </div>
+        <button id="refresh" type="button">Refresh</button>
+      </section>
+
+      <section class="panel">
+        <label for="peer">Peer</label>
+        <select id="peer"></select>
+        <label for="manualHost">Manual host</label>
+        <input id="manualHost" placeholder="169.254.x.x">
+      </section>
+
+      <section id="dropzone" class="dropzone">
+        <input id="fileInput" type="file" multiple>
+        <strong>Drop files here</strong>
+        <span>or choose files to send over the selected link</span>
+      </section>
+
+      <section class="panel">
+        <h2>Interfaces</h2>
+        <div id="interfaces" class="interfaces"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Activity</h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
