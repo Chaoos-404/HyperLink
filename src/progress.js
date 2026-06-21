@@ -2,6 +2,10 @@ export class Progress {
   constructor({ label = 'transfer', enabled = process.stderr.isTTY } = {}) {
     this.label = label;
     this.enabled = enabled;
+    this.reset();
+  }
+
+  reset() {
     this.startedAt = Date.now();
     this.lastPaint = 0;
     this.bytes = 0;

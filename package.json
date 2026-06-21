@@ -1,9 +1,10 @@
 {
-  "name": "boltbridge",
+  "name": "hyperlink",
   "version": "0.1.0",
-  "description": "High-speed peer-to-peer file transfer over link-local wired interfaces.",
+  "description": "HyperLink foundation package for high-speed transfer between devices.",
   "type": "module",
   "bin": {
+    "hyperlink": "./src/cli.js",
     "boltbridge": "./src/cli.js"
   },
   "scripts": {
