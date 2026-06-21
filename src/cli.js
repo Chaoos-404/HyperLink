@@ -7,6 +7,7 @@ import { startReceiver } from './receiver.js';
 import { sendPaths } from './sender.js';
 import { startGui } from './gui.js';
 import { printDoctorReport, runDoctor } from './doctor.js';
+import { defaultSpeedBytes, defaultSpeedPort, runSpeedClient, startSpeedServer } from './speedtest.js';
 
 main().catch((error) => {
   console.error(`boltbridge: ${error.message}`);
@@ -74,6 +75,27 @@ async function main() {
     });
     console.log(`HyperLink receiver listening on port ${receiver.port}; writing to ${options.dest ?? 'received'}`);
     await waitForever();
+    return;
+  }
+
+  if (command === 'speed-server') {
+    const server = await startSpeedServer({
+      host: options.host,
+      port: numberOption(options.port, defaultSpeedPort()),
+      onEvent: printSpeedEvent
+    });
+    console.log(`HyperLink speed server listening on port ${server.port}`);
+    await waitForever();
+    return;
+  }
+
+  if (command === 'speed-client') {
+    await runSpeedClient({
+      host: options.host,
+      port: numberOption(options.port, defaultSpeedPort()),
+      bytes: parseSize(options.bytes ?? options.size, defaultSpeedBytes()),
+      onEvent: printSpeedEvent
+    });
     return;
   }
 
@@ -179,6 +201,8 @@ Usage:
   hyperlink discover [--timeout 3000]
   hyperlink interfaces
   hyperlink doctor [--host address]
+  hyperlink speed-server [--port ${defaultSpeedPort()}]
+  hyperlink speed-client --host address [--port ${defaultSpeedPort()}] [--bytes 512mb]
   hyperlink gui [--port 44880]
 
 Notes:
@@ -203,5 +227,16 @@ function printDiagnostic(event) {
   if (event.blocksAcked !== undefined) parts.push(`acked=${event.blocksAcked}`);
   if (event.blocks !== undefined) parts.push(`blocks=${event.blocks}`);
 
+  console.error(parts.join(' '));
+}
+
+function printSpeedEvent(event) {
+  const parts = [
+    event.side,
+    event.final ? 'final' : 'live',
+    `bytes=${formatBytes(event.bytes)}`,
+    `rate=${formatBytes(event.throughputBytesPerSecond)}/s`
+  ];
+  if (event.writeMs) parts.push(`socketWrite=${event.writeMs.toFixed(1)}ms`);
   console.error(parts.join(' '));
 }
