@@ -4,7 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, FrameReader, PROTOCOL_VERSION, writeFrame } from './protocol.js';
+import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, DEFAULT_SOCKET_HIGH_WATER_MARK, FrameReader, PROTOCOL_VERSION, writeFrame } from './protocol.js';
 import { FALLBACK_HASH_ALGORITHM, chooseHashAlgorithm, createFastHash, hashBuffer, initHashing } from './hash.js';
 import { advertisePeer } from './discovery.js';
 
@@ -19,12 +19,13 @@ export async function startReceiver({
   overwrite = false,
   diagnostics = false,
   diagnosticsIntervalMs = 1000,
+  socketHighWaterMark = DEFAULT_SOCKET_HIGH_WATER_MARK,
   onEvent = () => {}
 } = {}) {
   await initHashing();
   await fsp.mkdir(dest, { recursive: true });
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ highWaterMark: socketHighWaterMark }, (socket) => {
     socket.setNoDelay(true);
     socket.setKeepAlive(true, 5000);
     receiveConnection(socket, { dest, token, overwrite, diagnostics, diagnosticsIntervalMs, onEvent }).catch((error) => {
@@ -82,7 +83,13 @@ export async function receiveConnection(socket, {
         return;
       }
       hashAlgorithm = chooseHashAlgorithm(header.supportedHashAlgorithms ?? []);
-      onEvent({ type: 'peer', agent: header.agent, remote: socket.remoteAddress });
+      onEvent({
+        type: 'peer',
+        agent: header.agent,
+        remote: socket.remoteAddress,
+        readableHighWaterMark: socket.readableHighWaterMark,
+        writableHighWaterMark: socket.writableHighWaterMark
+      });
       await writeFrame(socket, {
         type: 'hello_ack',
         version: PROTOCOL_VERSION,

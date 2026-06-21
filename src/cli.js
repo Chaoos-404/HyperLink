@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, DEFAULT_PORT } from './protocol.js';
+import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, DEFAULT_PORT, DEFAULT_SOCKET_HIGH_WATER_MARK } from './protocol.js';
 import { discoverPeers } from './discovery.js';
 import { listInterfaces } from './interfaces.js';
 import { Progress, formatBytes } from './progress.js';
@@ -7,7 +7,7 @@ import { startReceiver } from './receiver.js';
 import { sendPaths } from './sender.js';
 import { startGui } from './gui.js';
 import { printDoctorReport, runDoctor } from './doctor.js';
-import { defaultSpeedBytes, defaultSpeedPort, runSpeedClient, startSpeedServer } from './speedtest.js';
+import { defaultSpeedBytes, defaultSpeedChunkSize, defaultSpeedPort, runSpeedClient, startSpeedServer } from './speedtest.js';
 
 main().catch((error) => {
   console.error(`boltbridge: ${error.message}`);
@@ -59,6 +59,7 @@ async function main() {
       advertise: options.discovery !== false,
       overwrite: Boolean(options.overwrite),
       diagnostics: Boolean(options.diagnose || options.verbose),
+      socketHighWaterMark: parseSize(options.socketBuffer ?? options['socket-buffer'], DEFAULT_SOCKET_HIGH_WATER_MARK),
       onEvent: (event) => {
         if (event.type === 'file_start') {
           progress.reset();
@@ -82,6 +83,7 @@ async function main() {
     const server = await startSpeedServer({
       host: options.host,
       port: numberOption(options.port, defaultSpeedPort()),
+      socketHighWaterMark: parseSize(options.socketBuffer ?? options['socket-buffer'], DEFAULT_SOCKET_HIGH_WATER_MARK),
       onEvent: printSpeedEvent
     });
     console.log(`HyperLink speed server listening on port ${server.port}`);
@@ -94,6 +96,8 @@ async function main() {
       host: options.host,
       port: numberOption(options.port, defaultSpeedPort()),
       bytes: parseSize(options.bytes ?? options.size, defaultSpeedBytes()),
+      chunkSize: parseSize(options.chunkSize ?? options['chunk-size'], defaultSpeedChunkSize()),
+      socketHighWaterMark: parseSize(options.socketBuffer ?? options['socket-buffer'], DEFAULT_SOCKET_HIGH_WATER_MARK),
       onEvent: printSpeedEvent
     });
     return;
@@ -109,6 +113,7 @@ async function main() {
       token: options.token,
       blockSize: parseSize(options.blockSize ?? options['block-size'], DEFAULT_BLOCK_SIZE),
       pipelineWindow: numberOption(options.window ?? options.pipelineWindow, DEFAULT_PIPELINE_WINDOW),
+      socketHighWaterMark: parseSize(options.socketBuffer ?? options['socket-buffer'], null),
       retries: numberOption(options.retries, 2),
       diagnostics: Boolean(options.diagnose || options.verbose),
       onEvent: (event) => {
@@ -117,6 +122,7 @@ async function main() {
         if (event.type === 'negotiated' && (options.diagnose || options.verbose)) {
           console.error(
             `negotiated hash=${event.hashAlgorithm} block=${formatBytes(event.blockSize)} window=${event.pipelineWindow}` +
+            ` socketBuffer=${formatBytes(event.socketWritableHighWaterMark)}` +
             `${event.legacyPeer ? ' legacy-peer=true' : ''}`
           );
         }
@@ -197,12 +203,12 @@ function printHelp() {
 
 Usage:
   hyperlink serve [--dest received] [--port ${DEFAULT_PORT}] [--token secret] [--overwrite] [--diagnose]
-  hyperlink send <file-or-dir...> [--host address] [--port ${DEFAULT_PORT}] [--bind link-local-address] [--window ${DEFAULT_PIPELINE_WINDOW}] [--diagnose]
+  hyperlink send <file-or-dir...> [--host address] [--port ${DEFAULT_PORT}] [--bind link-local-address] [--window ${DEFAULT_PIPELINE_WINDOW}] [--socket-buffer 64mb] [--diagnose]
   hyperlink discover [--timeout 3000]
   hyperlink interfaces
   hyperlink doctor [--host address]
-  hyperlink speed-server [--port ${defaultSpeedPort()}]
-  hyperlink speed-client --host address [--port ${defaultSpeedPort()}] [--bytes 512mb]
+  hyperlink speed-server [--port ${defaultSpeedPort()}] [--socket-buffer 64mb]
+  hyperlink speed-client --host address [--port ${defaultSpeedPort()}] [--bytes 512mb] [--chunk-size 4mb] [--socket-buffer 64mb]
   hyperlink gui [--port 44880]
 
 Notes:
@@ -231,6 +237,15 @@ function printDiagnostic(event) {
 }
 
 function printSpeedEvent(event) {
+  if (event.type === 'speed_peer') {
+    console.error(
+      `${event.side} peer local=${event.localAddress ?? 'unknown'}:${event.localPort ?? 'unknown'} ` +
+      `remote=${event.remoteAddress ?? 'unknown'}:${event.remotePort ?? 'unknown'} ` +
+      `socketBuffer=${formatBytes(event.writableHighWaterMark)}`
+    );
+    return;
+  }
+
   const parts = [
     event.side,
     event.final ? 'final' : 'live',

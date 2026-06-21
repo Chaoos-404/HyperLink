@@ -5,6 +5,7 @@ export const DEFAULT_PORT = 44777;
 export const DEFAULT_BLOCK_SIZE = 16 * 1024 * 1024;
 export const LEGACY_BLOCK_SIZE = 4 * 1024 * 1024;
 export const DEFAULT_PIPELINE_WINDOW = 4;
+export const DEFAULT_SOCKET_HIGH_WATER_MARK = DEFAULT_BLOCK_SIZE * DEFAULT_PIPELINE_WINDOW;
 export const MAX_HEADER_BYTES = 64 * 1024;
 
 export async function writeFrame(socket, header, payload = Buffer.alloc(0)) {

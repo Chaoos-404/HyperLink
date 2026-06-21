@@ -1,20 +1,22 @@
 import net from 'node:net';
 import { once } from 'node:events';
-import { DEFAULT_PORT } from './protocol.js';
+import { DEFAULT_PORT, DEFAULT_SOCKET_HIGH_WATER_MARK } from './protocol.js';
 
 const DEFAULT_SPEED_PORT = DEFAULT_PORT + 1;
 const DEFAULT_SPEED_BYTES = 512 * 1024 * 1024;
-const CHUNK_SIZE = 1024 * 1024;
+const DEFAULT_SPEED_CHUNK_SIZE = 4 * 1024 * 1024;
 
 export async function startSpeedServer({
   host,
   port = DEFAULT_SPEED_PORT,
+  socketHighWaterMark = DEFAULT_SOCKET_HIGH_WATER_MARK,
   diagnosticsIntervalMs = 1000,
   onEvent = () => {}
 } = {}) {
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ highWaterMark: socketHighWaterMark }, (socket) => {
     socket.setNoDelay(true);
     socket.setKeepAlive(true, 5000);
+    onEvent(socketEvent({ side: 'server', socket }));
 
     const startedAt = performance.now();
     let lastReportAt = startedAt;
@@ -53,13 +55,16 @@ export async function runSpeedClient({
   host,
   port = DEFAULT_SPEED_PORT,
   bytes = DEFAULT_SPEED_BYTES,
+  chunkSize = DEFAULT_SPEED_CHUNK_SIZE,
+  socketHighWaterMark = DEFAULT_SOCKET_HIGH_WATER_MARK,
   diagnosticsIntervalMs = 1000,
   onEvent = () => {}
 } = {}) {
   if (!host) throw new Error('speed-client requires --host');
 
-  const socket = await connect(host, port);
-  const chunk = Buffer.alloc(CHUNK_SIZE);
+  const socket = await connect(host, port, socketHighWaterMark);
+  onEvent(socketEvent({ side: 'client', socket }));
+  const chunk = Buffer.alloc(chunkSize);
   const startedAt = performance.now();
   let lastReportAt = startedAt;
   let sent = 0;
@@ -76,12 +81,12 @@ export async function runSpeedClient({
     const now = performance.now();
     if (now - lastReportAt >= diagnosticsIntervalMs) {
       lastReportAt = now;
-      onEvent(speedEvent({ side: 'client', final: false, startedAt, bytes: sent, writeMs }));
+      onEvent(speedEvent({ side: 'client', final: false, startedAt, bytes: sent, writeMs, chunkSize }));
     }
   }
 
-  socket.end();
-  onEvent(speedEvent({ side: 'client', final: true, startedAt, bytes: sent, writeMs }));
+  await new Promise((resolve) => socket.end(resolve));
+  onEvent(speedEvent({ side: 'client', final: true, startedAt, bytes: sent, writeMs, chunkSize }));
 }
 
 export function defaultSpeedPort() {
@@ -92,7 +97,11 @@ export function defaultSpeedBytes() {
   return DEFAULT_SPEED_BYTES;
 }
 
-function speedEvent({ side, final, startedAt, bytes, writeMs = 0 }) {
+export function defaultSpeedChunkSize() {
+  return DEFAULT_SPEED_CHUNK_SIZE;
+}
+
+function speedEvent({ side, final, startedAt, bytes, writeMs = 0, chunkSize = DEFAULT_SPEED_CHUNK_SIZE }) {
   const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
   return {
     type: 'speed',
@@ -101,13 +110,27 @@ function speedEvent({ side, final, startedAt, bytes, writeMs = 0 }) {
     bytes,
     elapsedSeconds,
     throughputBytesPerSecond: bytes / elapsedSeconds,
-    writeMs
+    writeMs,
+    chunkSize
   };
 }
 
-async function connect(host, port) {
+function socketEvent({ side, socket }) {
+  return {
+    type: 'speed_peer',
+    side,
+    localAddress: socket.localAddress,
+    localPort: socket.localPort,
+    remoteAddress: socket.remoteAddress,
+    remotePort: socket.remotePort,
+    readableHighWaterMark: socket.readableHighWaterMark,
+    writableHighWaterMark: socket.writableHighWaterMark
+  };
+}
+
+async function connect(host, port, socketHighWaterMark) {
   return await new Promise((resolve, reject) => {
-    const socket = net.connect({ host, port });
+    const socket = net.connect({ host, port, highWaterMark: socketHighWaterMark });
     socket.once('connect', () => {
       socket.setNoDelay(true);
       socket.setKeepAlive(true, 5000);

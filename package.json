@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node ./src/cli.js",
     "test": "node --test",
-    "check": "node --check ./src/*.js"
+    "check": "node ./scripts/check-syntax.js"
   },
   "dependencies": {
     "multicast-dns": "^7.2.5",

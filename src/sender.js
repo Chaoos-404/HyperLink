@@ -2,7 +2,7 @@ import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, FrameReader, LEGACY_BLOCK_SIZE, PROTOCOL_VERSION, writeFrame } from './protocol.js';
+import { DEFAULT_BLOCK_SIZE, DEFAULT_PIPELINE_WINDOW, DEFAULT_SOCKET_HIGH_WATER_MARK, FrameReader, LEGACY_BLOCK_SIZE, PROTOCOL_VERSION, writeFrame } from './protocol.js';
 import { FALLBACK_HASH_ALGORITHM, SUPPORTED_HASH_ALGORITHMS, createFastHash, hashBuffer, initHashing } from './hash.js';
 import { discoverPeers } from './discovery.js';
 
@@ -17,12 +17,14 @@ export async function sendPaths({
   retries = 2,
   diagnostics = false,
   diagnosticsIntervalMs = 1000,
+  socketHighWaterMark,
   onEvent = () => {}
 }) {
   await initHashing();
   if (!paths?.length) throw new Error('No input paths were provided');
   const peer = host ? { host, port } : await chooseDiscoveredPeer();
-  const socket = await connect(peer.host, peer.port ?? port, bind);
+  const requestedHighWaterMark = socketHighWaterMark ?? defaultSocketHighWaterMark({ blockSize, pipelineWindow });
+  const socket = await connect(peer.host, peer.port ?? port, bind, requestedHighWaterMark);
   const reader = new FrameReader(socket);
 
   await writeFrame(socket, {
@@ -35,7 +37,7 @@ export async function sendPaths({
   });
   const hello = await expect(reader, 'hello_ack');
   const transferProfile = negotiateTransferProfile(hello, { blockSize, pipelineWindow });
-  onEvent({ type: 'negotiated', ...transferProfile, peer: hello });
+  onEvent({ type: 'negotiated', ...transferProfile, peer: hello, ...socketWatermarks(socket) });
 
   for (const source of paths) {
     for await (const entry of walkSource(source)) {
@@ -71,10 +73,12 @@ export async function sendVirtualFile({
   pipelineWindow = DEFAULT_PIPELINE_WINDOW,
   diagnostics = false,
   diagnosticsIntervalMs = 1000,
+  socketHighWaterMark,
   onEvent = () => {}
 }) {
   await initHashing();
-  const socket = await connect(host, port);
+  const requestedHighWaterMark = socketHighWaterMark ?? defaultSocketHighWaterMark({ blockSize, pipelineWindow });
+  const socket = await connect(host, port, undefined, requestedHighWaterMark);
   const reader = new FrameReader(socket);
   await writeFrame(socket, {
     type: 'hello',
@@ -85,7 +89,7 @@ export async function sendVirtualFile({
   });
   const hello = await expect(reader, 'hello_ack');
   const transferProfile = negotiateTransferProfile(hello, { blockSize, pipelineWindow });
-  onEvent({ type: 'negotiated', ...transferProfile, peer: hello });
+  onEvent({ type: 'negotiated', ...transferProfile, peer: hello, ...socketWatermarks(socket) });
   await sendStream(socket, reader, {
     relativePath,
     size,
@@ -295,9 +299,22 @@ async function expect(reader, type) {
   return frame.header;
 }
 
-async function connect(host, port, bind) {
+function defaultSocketHighWaterMark({ blockSize, pipelineWindow }) {
+  return Math.max(DEFAULT_SOCKET_HIGH_WATER_MARK, blockSize * Math.max(1, pipelineWindow));
+}
+
+function socketWatermarks(socket) {
+  return {
+    socketReadableHighWaterMark: socket.readableHighWaterMark,
+    socketWritableHighWaterMark: socket.writableHighWaterMark
+  };
+}
+
+async function connect(host, port, bind, socketHighWaterMark) {
   return await new Promise((resolve, reject) => {
-    const socket = net.connect({ host, port, localAddress: bind });
+    const options = { host, port, highWaterMark: socketHighWaterMark };
+    if (bind) options.localAddress = bind;
+    const socket = net.connect(options);
     socket.once('connect', () => {
       socket.setNoDelay(true);
       socket.setKeepAlive(true, 5000);
