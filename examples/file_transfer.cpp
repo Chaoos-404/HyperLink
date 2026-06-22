@@ -203,9 +203,32 @@ std::uint64_t permissions_value(std::filesystem::perms permissions) {
 }
 
 void apply_permissions(const std::filesystem::path& path, std::uint64_t mode) {
+#if defined(_WIN32)
+  (void)path;
+  (void)mode;
+#else
   std::error_code error;
   std::filesystem::permissions(path, static_cast<std::filesystem::perms>(mode),
                                std::filesystem::perm_options::replace, error);
+#endif
+}
+
+void create_symlink_or_fallback(const std::string& target,
+                                const std::filesystem::path& output_path) {
+  std::error_code error;
+  std::filesystem::remove(output_path, error);
+  error.clear();
+  std::filesystem::create_symlink(target, output_path, error);
+  if (!error) {
+    return;
+  }
+
+  auto fallback = std::ofstream{output_path.string() + ".hyperlink-symlink.txt",
+                                std::ios::binary | std::ios::trunc};
+  if (!fallback) {
+    throw std::runtime_error("failed to create symlink fallback file for: " + output_path.string());
+  }
+  fallback << target;
 }
 
 std::string shell_quote(const std::filesystem::path& path) {
@@ -835,9 +858,7 @@ void receive_file_part(const Options& options, std::uint32_t stream, ReceiveShar
         const auto output_path = options.output_dir / safe_relative_path(incoming->file_name);
         std::filesystem::create_directories(output_path.parent_path());
         const auto target = receive_text_payload(session, incoming->payload_size);
-        std::error_code error;
-        std::filesystem::remove(output_path, error);
-        std::filesystem::create_symlink(target, output_path);
+        create_symlink_or_fallback(target, output_path);
         result.bytes += incoming->payload_size;
         continue;
       }

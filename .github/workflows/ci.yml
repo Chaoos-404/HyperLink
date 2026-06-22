@@ -91,3 +91,9 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/msvc -C Debug --output-on-failure
+
+      - name: Build Release
+        run: cmake --build build/msvc --config Release
+
+      - name: Test Release
+        run: ctest --test-dir build/msvc -C Release --output-on-failure

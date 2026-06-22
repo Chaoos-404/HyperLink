@@ -131,7 +131,7 @@ ssh user@169.254.119.3
 The deploy script defaults to:
 
 - remote directory: `~/Hyperlink`
-- CMake preset: `debug`
+- CMake preset: `release`
 - server ports: `47777..47784`
 - parallel streams: `8`
 - socket buffer: `8388608`
@@ -197,6 +197,55 @@ For large regular files and big directories, use parallel streams:
 ```
 
 With `--parallel`, directory transfer uses Hyperlink's native directory mode instead of tar. It transfers files across multiple sockets, recreates directories, preserves regular file permissions, and recreates symlinks. It can still be limited by many small filesystem writes, but it avoids the slow pre-tar step.
+
+## Windows Laptop Receiver
+
+Install MSYS2 from <https://www.msys2.org>, then open **MSYS2 UCRT64** and install the build tools:
+
+```sh
+pacman -Syu
+pacman -S --needed mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-gcc \
+  mingw-w64-ucrt-x86_64-pkgconf
+```
+
+Build in the **MSYS2 UCRT64** shell:
+
+```sh
+cmake --preset release -DHYPERLINK_ENABLE_LIBUSB=OFF
+cmake --build --preset release
+```
+
+Find the Windows laptop IP on the USB4/Thunderbolt network:
+
+```powershell
+Get-NetAdapter
+Get-NetIPAddress
+```
+
+Allow the benchmark and file-transfer ports through Windows Firewall:
+
+```powershell
+New-NetFirewallRule -DisplayName "Hyperlink Bench" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47777-47797
+New-NetFirewallRule -DisplayName "Hyperlink File" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47790-47797
+```
+
+Start a Windows receiver:
+
+```sh
+./build/release/hyperlink_file.exe --receive --host 0.0.0.0 --port 47790 \
+  --output-dir /c/Users/<your-user>/Downloads --parallel 8
+```
+
+Send from macOS to the Windows laptop:
+
+```sh
+./build/release/hyperlink_file --send --host <windows-usb4-ip> --port 47790 \
+  --file /path/to/file-or-directory --parallel 8
+```
+
+Windows may block symlink creation unless Developer Mode or elevated permissions are enabled. If symlink creation fails, Hyperlink writes a small `*.hyperlink-symlink.txt` file containing the symlink target instead of failing the whole transfer.
 
 ## Current Milestones
 
