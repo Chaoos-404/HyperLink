@@ -38,6 +38,34 @@ test('speed test applies socket buffer and chunk size tuning', async () => {
   assert.equal(final?.chunkSize, 64 * 1024);
 });
 
+test('tcp speed client auto-detects the server port from a candidate range', async () => {
+  const events = [];
+  const server = await startSpeedServer({
+    port: 0,
+    host: '127.0.0.1',
+    onEvent: (event) => events.push(event)
+  });
+
+  try {
+    await runSpeedClient({
+      host: '127.0.0.1',
+      autoPort: true,
+      portRange: [server.port + 1, server.port, server.port + 2],
+      bytes: 32 * 1024,
+      chunkSize: 8 * 1024,
+      onEvent: (event) => events.push(event)
+    });
+  } finally {
+    await server.close();
+  }
+
+  const detected = events.find((event) => event.type === 'speed_port_detected');
+  const final = events.find((event) => event.type === 'speed' && event.side === 'client' && event.final);
+
+  assert.equal(detected?.port, server.port);
+  assert.equal(final?.port, server.port);
+});
+
 test('file transfer applies configured socket buffer tuning', async () => {
   const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'hyperlink-socket-tuning-'));
   const dest = path.join(temp, 'received');

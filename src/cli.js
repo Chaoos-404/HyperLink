@@ -8,6 +8,7 @@ import { sendPaths } from './sender.js';
 import { startGui } from './gui.js';
 import { printDoctorReport, runDoctor } from './doctor.js';
 import { defaultSpeedBytes, defaultSpeedChunkSize, defaultSpeedPort, runSpeedClient, startSpeedServer } from './speedtest.js';
+import { defaultUdpPacketSize, defaultUdpSpeedBytes, defaultUdpSpeedPort, runUdpSpeedClient, startUdpSpeedServer } from './udpspeed.js';
 
 main().catch((error) => {
   console.error(`boltbridge: ${error.message}`);
@@ -95,9 +96,35 @@ async function main() {
     await runSpeedClient({
       host: options.host,
       port: numberOption(options.port, defaultSpeedPort()),
+      autoPort: Boolean(options.autoPort ?? options['auto-port']),
+      portRange: parsePortRange(options.portRange ?? options['port-range']),
       bytes: parseSize(options.bytes ?? options.size, defaultSpeedBytes()),
       chunkSize: parseSize(options.chunkSize ?? options['chunk-size'], defaultSpeedChunkSize()),
       socketHighWaterMark: parseSize(options.socketBuffer ?? options['socket-buffer'], DEFAULT_SOCKET_HIGH_WATER_MARK),
+      onEvent: printSpeedEvent
+    });
+    return;
+  }
+
+  if (command === 'udp-speed-server') {
+    const server = await startUdpSpeedServer({
+      host: options.host,
+      port: numberOption(options.port, defaultUdpSpeedPort()),
+      onEvent: printSpeedEvent
+    });
+    console.log(`HyperLink UDP speed server listening on port ${server.port}`);
+    await waitForever();
+    return;
+  }
+
+  if (command === 'udp-speed-client') {
+    await runUdpSpeedClient({
+      host: options.host,
+      port: numberOption(options.port, defaultUdpSpeedPort()),
+      autoPort: Boolean(options.autoPort ?? options['auto-port']),
+      portRange: parsePortRange(options.portRange ?? options['port-range']),
+      bytes: parseSize(options.bytes ?? options.size, defaultUdpSpeedBytes()),
+      packetSize: parseSize(options.packetSize ?? options['packet-size'], defaultUdpPacketSize()),
       onEvent: printSpeedEvent
     });
     return;
@@ -190,6 +217,33 @@ function parseSize(value, fallback) {
   return Math.floor(number * multiplier);
 }
 
+function parsePortRange(value) {
+  if (value === undefined || value === true || value === false) return undefined;
+  const text = String(value).trim();
+  if (!text) return undefined;
+  const ports = [];
+  for (const part of text.split(',')) {
+    const trimmed = part.trim();
+    const range = trimmed.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (!validPort(start) || !validPort(end) || end < start) throw new Error(`Invalid port range: ${trimmed}`);
+      for (let port = start; port <= end; port += 1) ports.push(port);
+      continue;
+    }
+
+    const port = Number(trimmed);
+    if (!validPort(port)) throw new Error(`Invalid port: ${trimmed}`);
+    ports.push(port);
+  }
+  return ports;
+}
+
+function validPort(port) {
+  return Number.isInteger(port) && port > 0 && port <= 65535;
+}
+
 function camel(value) {
   return value.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
 }
@@ -208,7 +262,9 @@ Usage:
   hyperlink interfaces
   hyperlink doctor [--host address]
   hyperlink speed-server [--port ${defaultSpeedPort()}] [--socket-buffer 64mb]
-  hyperlink speed-client --host address [--port ${defaultSpeedPort()}] [--bytes 512mb] [--chunk-size 4mb] [--socket-buffer 64mb]
+  hyperlink speed-client --host address [--port ${defaultSpeedPort()}] [--auto-port] [--port-range ${defaultSpeedPort()}-${defaultSpeedPort() + 20}] [--bytes 512mb] [--chunk-size 4mb] [--socket-buffer 64mb]
+  hyperlink udp-speed-server [--port ${defaultUdpSpeedPort()}]
+  hyperlink udp-speed-client --host address [--port ${defaultUdpSpeedPort()}] [--auto-port] [--port-range ${defaultUdpSpeedPort()}-${defaultUdpSpeedPort() + 20}] [--bytes 512mb] [--packet-size 1200]
   hyperlink gui [--port 44880]
 
 Notes:
@@ -237,11 +293,16 @@ function printDiagnostic(event) {
 }
 
 function printSpeedEvent(event) {
-  if (event.type === 'speed_peer') {
+  if (event.type === 'speed_port_detected' || event.type === 'udp_port_detected') {
+    console.error(`${event.type === 'udp_port_detected' ? 'udp ' : ''}speed server detected host=${event.host} port=${event.port}`);
+    return;
+  }
+
+  if (event.type === 'speed_peer' || event.type === 'udp_peer') {
     console.error(
       `${event.side} peer local=${event.localAddress ?? 'unknown'}:${event.localPort ?? 'unknown'} ` +
       `remote=${event.remoteAddress ?? 'unknown'}:${event.remotePort ?? 'unknown'} ` +
-      `socketBuffer=${formatBytes(event.writableHighWaterMark)}`
+      `${event.writableHighWaterMark ? `socketBuffer=${formatBytes(event.writableHighWaterMark)}` : ''}`
     );
     return;
   }
@@ -253,5 +314,13 @@ function printSpeedEvent(event) {
     `rate=${formatBytes(event.throughputBytesPerSecond)}/s`
   ];
   if (event.writeMs) parts.push(`socketWrite=${event.writeMs.toFixed(1)}ms`);
+  if (event.sendMs) parts.push(`udpSend=${event.sendMs.toFixed(1)}ms`);
+  if (event.packets !== undefined) parts.push(`packets=${event.packets}`);
+  if (event.packetSize !== undefined) parts.push(`packetSize=${formatBytes(event.packetSize)}`);
+  if (event.remoteBytes !== undefined) {
+    parts.push(`received=${formatBytes(event.remoteBytes)}`);
+    parts.push(`receiveRate=${formatBytes(event.remoteThroughputBytesPerSecond)}/s`);
+    parts.push(`loss=${event.lossPercent.toFixed(2)}%`);
+  }
   console.error(parts.join(' '));
 }
