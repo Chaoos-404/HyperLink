@@ -283,6 +283,31 @@ struct DiscoveredReceiver {
   std::string name;
 };
 
+int discovery_preference(const std::string& host) {
+  auto octets = std::array<int, 4>{};
+  if (std::sscanf(host.c_str(), "%d.%d.%d.%d", &octets[0], &octets[1], &octets[2],
+                  &octets[3]) != 4) {
+    return 1000;
+  }
+
+  if (octets[0] == 169 && octets[1] == 254) {
+    return 0;
+  }
+  if (octets[0] == 10) {
+    return 100;
+  }
+  if (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) {
+    return 110;
+  }
+  if (octets[0] == 192 && octets[1] == 168) {
+    return 120;
+  }
+  if (octets[0] == 127) {
+    return 900;
+  }
+  return 200;
+}
+
 std::string local_receiver_name() {
   auto buffer = std::array<char, 256>{};
   if (gethostname(buffer.data(), static_cast<int>(buffer.size() - 1)) == 0) {
@@ -319,7 +344,7 @@ DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
   }
 
   set_broadcast(socket.get());
-  set_socket_timeout(socket.get(), timeout);
+  set_socket_timeout(socket.get(), std::chrono::milliseconds{200});
   const auto request = std::string{"HLINK_DISCOVER_V1 hyperlink-file"};
   for (const auto& destination : {"255.255.255.255", "169.254.255.255", "127.0.0.1"}) {
     const auto address = make_ipv4_address(destination, discovery_port);
@@ -327,7 +352,9 @@ DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
            reinterpret_cast<const sockaddr*>(&address), sizeof(address));
   }
 
+  auto candidates = std::vector<DiscoveredReceiver>{};
   const auto deadline = std::chrono::steady_clock::now() + timeout;
+  auto first_response_deadline = std::optional<std::chrono::steady_clock::time_point>{};
   while (std::chrono::steady_clock::now() < deadline) {
     auto buffer = std::array<char, 512>{};
     auto source = sockaddr_in{};
@@ -346,8 +373,29 @@ DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
     const auto source_host = ipv4_to_string(source);
     if (auto parsed = parse_discovery_response(
             std::string_view{buffer.data(), static_cast<std::size_t>(received)}, source_host)) {
-      return *parsed;
+      if (std::none_of(candidates.begin(), candidates.end(),
+                       [&](const auto& candidate) { return candidate.host == parsed->host; })) {
+        candidates.push_back(*parsed);
+      }
+      if (discovery_preference(parsed->host) == 0) {
+        break;
+      }
+      if (!first_response_deadline) {
+        first_response_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds{350};
+      }
     }
+
+    if (first_response_deadline && std::chrono::steady_clock::now() >= *first_response_deadline) {
+      break;
+    }
+  }
+
+  if (!candidates.empty()) {
+    return *std::min_element(candidates.begin(), candidates.end(), [](const auto& left,
+                                                                      const auto& right) {
+      return discovery_preference(left.host) < discovery_preference(right.host);
+    });
   }
 
   throw std::runtime_error("no Hyperlink receiver discovered");
@@ -858,6 +906,10 @@ int run_send(const Options& options) {
     effective_options.parallel = receiver.parallel;
     std::cout << "Discovered " << receiver.name << " at " << receiver.host << ":" << receiver.port
               << " with " << receiver.parallel << " stream(s)\n";
+    if (discovery_preference(receiver.host) > 0 && receiver.host.rfind("127.", 0) != 0) {
+      std::cerr << "warning: discovered a non-link-local address. If this is using Wi-Fi/LAN, "
+                   "rerun with --host <169.254.x.x> for the USB4/Thunderbolt link.\n";
+    }
   }
 
   if (!std::filesystem::exists(effective_options.file)) {
