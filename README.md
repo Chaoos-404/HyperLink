@@ -207,9 +207,10 @@ let Hyperlink discover the receiver and copy the receiver's transfer settings:
 hyperlink send /path/to/file-or-directory
 ```
 
-Auto-discovery refuses Wi-Fi/LAN fallback by default. If it cannot find a cable-side
-`169.254.x.x` receiver address, it stops and prints the addresses it found. Use
-`--allow-lan` only when you intentionally want to transfer over Wi-Fi or Ethernet LAN.
+Auto-discovery probes each local IPv4 interface, prefers cable-side `169.254.x.x`
+receiver addresses, and refuses Wi-Fi/LAN fallback by default. If it cannot find a
+cable-side receiver address, it stops and prints the addresses it found. Use `--allow-lan`
+only when you intentionally want to transfer over Wi-Fi or Ethernet LAN.
 
 You can still target a known address manually:
 
@@ -302,21 +303,21 @@ Windows may block symlink creation unless Developer Mode or elevated permissions
 ## Publishing Releases
 
 Run the `Release native packages` workflow from the GitHub Actions tab and enter a tag
-such as `v0.1.3`. You can also publish by pushing a version tag:
+such as `v0.1.4`. You can also publish by pushing a version tag:
 
 ```sh
-git tag v0.1.3
-git push HyperLink v0.1.3
+git tag v0.1.4
+git push HyperLink v0.1.4
 ```
 
 The `Release native packages` workflow attaches native archives to the GitHub Release.
 The archives are named by OS and CPU, for example:
 
 ```text
-Hyperlink-0.1.3-linux-x64.tar.gz
-Hyperlink-0.1.3-macos-universal.tar.gz
-Hyperlink-0.1.3-windows-x64.zip
-hyperlink_0.1.3_amd64.deb
+Hyperlink-0.1.4-linux-x64.tar.gz
+Hyperlink-0.1.4-macos-universal.tar.gz
+Hyperlink-0.1.4-windows-x64.zip
+hyperlink_0.1.4_amd64.deb
 ```
 
 The `Publish APT repository` workflow publishes the `.deb` release asset as a minimal

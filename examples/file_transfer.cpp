@@ -30,10 +30,13 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #else
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -287,6 +290,16 @@ struct DiscoveredReceiver {
   std::string name;
 };
 
+struct DiscoveryTarget {
+  std::string bind_host;
+  std::string destination_host;
+};
+
+struct ActiveDiscoverySocket {
+  UdpSocketHandle socket;
+  std::string bind_host;
+};
+
 int discovery_preference(const std::string& host) {
   auto octets = std::array<int, 4>{};
   if (std::sscanf(host.c_str(), "%d.%d.%d.%d", &octets[0], &octets[1], &octets[2],
@@ -352,51 +365,220 @@ std::string candidate_hosts(const std::vector<DiscoveredReceiver>& candidates) {
   return hosts.empty() ? "none" : hosts;
 }
 
+std::string ipv4_from_host_order(std::uint32_t address) {
+  auto socket_address = sockaddr_in{};
+  socket_address.sin_family = AF_INET;
+  socket_address.sin_addr.s_addr = htonl(address);
+  return ipv4_to_string(socket_address);
+}
+
+std::uint32_t ipv4_to_host_order(const sockaddr_in& address) {
+  return ntohl(address.sin_addr.s_addr);
+}
+
+std::uint32_t prefix_mask(std::uint32_t prefix_length) {
+  if (prefix_length == 0) {
+    return 0;
+  }
+  if (prefix_length >= 32) {
+    return 0xFFFFFFFFU;
+  }
+  return 0xFFFFFFFFU << (32U - prefix_length);
+}
+
+void add_discovery_target(std::vector<DiscoveryTarget>& targets, std::string bind_host,
+                          std::string destination_host) {
+  if (bind_host.empty() || destination_host.empty()) {
+    return;
+  }
+  const auto duplicate = std::any_of(targets.begin(), targets.end(), [&](const auto& target) {
+    return target.bind_host == bind_host && target.destination_host == destination_host;
+  });
+  if (!duplicate) {
+    targets.push_back(DiscoveryTarget{
+        .bind_host = std::move(bind_host),
+        .destination_host = std::move(destination_host),
+    });
+  }
+}
+
+#if defined(_WIN32)
+std::vector<DiscoveryTarget> interface_discovery_targets() {
+  auto targets = std::vector<DiscoveryTarget>{};
+  auto buffer_size = ULONG{15 * 1024};
+  auto buffer = std::vector<unsigned char>(buffer_size);
+  auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+  auto flags = ULONG{GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER};
+  auto result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &buffer_size);
+  if (result == ERROR_BUFFER_OVERFLOW) {
+    buffer.resize(buffer_size);
+    adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &buffer_size);
+  }
+  if (result != NO_ERROR) {
+    return targets;
+  }
+
+  for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
+    if (adapter->OperStatus != IfOperStatusUp) {
+      continue;
+    }
+    for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr;
+         unicast = unicast->Next) {
+      if (unicast->Address.lpSockaddr == nullptr ||
+          unicast->Address.lpSockaddr->sa_family != AF_INET) {
+        continue;
+      }
+      const auto* address =
+          reinterpret_cast<const sockaddr_in*>(unicast->Address.lpSockaddr);
+      const auto host = ipv4_to_string(*address);
+      const auto local = ipv4_to_host_order(*address);
+      const auto mask = prefix_mask(unicast->OnLinkPrefixLength);
+      const auto broadcast = (local & mask) | (~mask);
+      add_discovery_target(targets, host, ipv4_from_host_order(broadcast));
+      add_discovery_target(targets, host, "255.255.255.255");
+    }
+  }
+  return targets;
+}
+#else
+std::vector<DiscoveryTarget> interface_discovery_targets() {
+  auto targets = std::vector<DiscoveryTarget>{};
+  auto* interfaces = static_cast<ifaddrs*>(nullptr);
+  if (getifaddrs(&interfaces) != 0) {
+    return targets;
+  }
+
+  for (auto* interface = interfaces; interface != nullptr; interface = interface->ifa_next) {
+    if (interface->ifa_addr == nullptr || interface->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+    if ((interface->ifa_flags & IFF_UP) == 0) {
+      continue;
+    }
+
+    const auto* address = reinterpret_cast<const sockaddr_in*>(interface->ifa_addr);
+    const auto bind_host = ipv4_to_string(*address);
+    if (interface->ifa_broadaddr != nullptr && (interface->ifa_flags & IFF_BROADCAST) != 0) {
+      const auto* broadcast = reinterpret_cast<const sockaddr_in*>(interface->ifa_broadaddr);
+      add_discovery_target(targets, bind_host, ipv4_to_string(*broadcast));
+    } else if (interface->ifa_netmask != nullptr) {
+      const auto* netmask = reinterpret_cast<const sockaddr_in*>(interface->ifa_netmask);
+      const auto broadcast =
+          (ipv4_to_host_order(*address) & ipv4_to_host_order(*netmask)) |
+          (~ipv4_to_host_order(*netmask));
+      add_discovery_target(targets, bind_host, ipv4_from_host_order(broadcast));
+    }
+    add_discovery_target(targets, bind_host, "255.255.255.255");
+  }
+
+  freeifaddrs(interfaces);
+  return targets;
+}
+#endif
+
+std::vector<ActiveDiscoverySocket> open_discovery_sockets(
+    const std::vector<DiscoveryTarget>& targets, std::uint16_t discovery_port,
+    std::string_view request) {
+  auto sockets = std::vector<ActiveDiscoverySocket>{};
+  for (const auto& target : targets) {
+    auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
+    if (!socket.valid()) {
+      continue;
+    }
+    set_broadcast(socket.get());
+    set_socket_timeout(socket.get(), std::chrono::milliseconds{100});
+
+    auto bind_address = make_ipv4_address(target.bind_host, 0);
+    if (bind(socket.get(), reinterpret_cast<const sockaddr*>(&bind_address),
+             sizeof(bind_address)) != 0) {
+      continue;
+    }
+
+    const auto destination = make_ipv4_address(target.destination_host, discovery_port);
+    static_cast<void>(sendto(socket.get(), request.data(), static_cast<int>(request.size()), 0,
+                             reinterpret_cast<const sockaddr*>(&destination),
+                             sizeof(destination)));
+    sockets.push_back(ActiveDiscoverySocket{
+        .socket = std::move(socket),
+        .bind_host = target.bind_host,
+    });
+  }
+  return sockets;
+}
+
+void collect_discovery_responses(UdpSocket socket, std::vector<DiscoveredReceiver>& candidates) {
+  auto buffer = std::array<char, 512>{};
+  auto source = sockaddr_in{};
+#if defined(_WIN32)
+  auto source_size = static_cast<int>(sizeof(source));
+  const auto received = recvfrom(socket, buffer.data(), static_cast<int>(buffer.size() - 1), 0,
+                                 reinterpret_cast<sockaddr*>(&source), &source_size);
+#else
+  auto source_size = socklen_t{sizeof(source)};
+  const auto received = recvfrom(socket, buffer.data(), buffer.size() - 1, 0,
+                                 reinterpret_cast<sockaddr*>(&source), &source_size);
+#endif
+  if (received <= 0) {
+    return;
+  }
+  const auto source_host = ipv4_to_string(source);
+  if (auto parsed = parse_discovery_response(
+          std::string_view{buffer.data(), static_cast<std::size_t>(received)}, source_host)) {
+    if (std::none_of(candidates.begin(), candidates.end(),
+                     [&](const auto& candidate) { return candidate.host == parsed->host; })) {
+      candidates.push_back(*parsed);
+    }
+  }
+}
+
 DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
                                      std::chrono::milliseconds timeout, bool allow_lan) {
   ensure_socket_runtime();
-  auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
-  if (!socket.valid()) {
-    throw std::runtime_error("failed to create discovery socket: " + socket_error());
+
+  const auto request = std::string{"HLINK_DISCOVER_V1 hyperlink-file"};
+  auto targets = interface_discovery_targets();
+  add_discovery_target(targets, "127.0.0.1", "127.0.0.1");
+
+  auto active_sockets = open_discovery_sockets(targets, discovery_port, request);
+
+  auto fallback_socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
+  if (fallback_socket.valid()) {
+    set_broadcast(fallback_socket.get());
+    set_socket_timeout(fallback_socket.get(), std::chrono::milliseconds{100});
+  }
+  for (const auto& destination : {"255.255.255.255", "169.254.255.255", "127.0.0.1"}) {
+    if (!fallback_socket.valid()) {
+      continue;
+    }
+    const auto address = make_ipv4_address(destination, discovery_port);
+    static_cast<void>(sendto(fallback_socket.get(), request.data(),
+                             static_cast<int>(request.size()), 0,
+                             reinterpret_cast<const sockaddr*>(&address), sizeof(address)));
   }
 
-  set_broadcast(socket.get());
-  set_socket_timeout(socket.get(), std::chrono::milliseconds{200});
-  const auto request = std::string{"HLINK_DISCOVER_V1 hyperlink-file"};
-  for (const auto& destination : {"255.255.255.255", "169.254.255.255", "127.0.0.1"}) {
-    const auto address = make_ipv4_address(destination, discovery_port);
-    sendto(socket.get(), request.data(), static_cast<int>(request.size()), 0,
-           reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+  if (active_sockets.empty() && !fallback_socket.valid()) {
+    throw std::runtime_error("failed to create discovery socket: " + socket_error());
   }
 
   auto candidates = std::vector<DiscoveredReceiver>{};
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   auto first_response_deadline = std::optional<std::chrono::steady_clock::time_point>{};
   while (std::chrono::steady_clock::now() < deadline) {
-    auto buffer = std::array<char, 512>{};
-    auto source = sockaddr_in{};
-#if defined(_WIN32)
-    auto source_size = static_cast<int>(sizeof(source));
-    const auto received = recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size() - 1),
-                                   0, reinterpret_cast<sockaddr*>(&source), &source_size);
-#else
-    auto source_size = socklen_t{sizeof(source)};
-    const auto received = recvfrom(socket.get(), buffer.data(), buffer.size() - 1, 0,
-                                   reinterpret_cast<sockaddr*>(&source), &source_size);
-#endif
-    if (received <= 0) {
-      continue;
+    if (fallback_socket.valid()) {
+      collect_discovery_responses(fallback_socket.get(), candidates);
     }
-    const auto source_host = ipv4_to_string(source);
-    if (auto parsed = parse_discovery_response(
-            std::string_view{buffer.data(), static_cast<std::size_t>(received)}, source_host)) {
-      if (std::none_of(candidates.begin(), candidates.end(),
-                       [&](const auto& candidate) { return candidate.host == parsed->host; })) {
-        candidates.push_back(*parsed);
-      }
-      if (discovery_preference(parsed->host) == 0) {
-        break;
-      }
+    for (const auto& active_socket : active_sockets) {
+      collect_discovery_responses(active_socket.socket.get(), candidates);
+    }
+
+    if (std::any_of(candidates.begin(), candidates.end(), [](const auto& candidate) {
+          return discovery_preference(candidate.host) == 0;
+        })) {
+      break;
+    }
+
+    if (!candidates.empty()) {
       if (!first_response_deadline) {
         first_response_deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds{350};
