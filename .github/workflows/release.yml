@@ -34,7 +34,7 @@ jobs:
             generator: Ninja
           - target: windows-x64
             os: windows-latest
-            generator: "Visual Studio 17 2022"
+            generator: Ninja
 
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +48,16 @@ jobs:
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja
+
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
 
       - name: Configure Unix
         if: runner.os != 'Windows'
@@ -71,22 +81,28 @@ jobs:
 
       - name: Configure Windows
         if: runner.os == 'Windows'
+        shell: msys2 {0}
         run: >
-          cmake -S . -B build/package -G "${{ matrix.generator }}" -A x64
+          cmake -S . -B build/package -G "${{ matrix.generator }}"
+          -DCMAKE_BUILD_TYPE=Release
           -DHYPERLINK_ENABLE_LIBUSB=OFF
           -DHYPERLINK_BUILD_TESTS=ON
+          -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
 
       - name: Build Windows
         if: runner.os == 'Windows'
-        run: cmake --build build/package --config Release
+        shell: msys2 {0}
+        run: cmake --build build/package
 
       - name: Test Windows
         if: runner.os == 'Windows'
-        run: ctest --test-dir build/package -C Release --output-on-failure
+        shell: msys2 {0}
+        run: ctest --test-dir build/package --output-on-failure
 
       - name: Package Windows
         if: runner.os == 'Windows'
-        run: cpack -C Release --config build/package/CPackConfig.cmake -B dist
+        shell: msys2 {0}
+        run: cpack --config build/package/CPackConfig.cmake -B dist
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4

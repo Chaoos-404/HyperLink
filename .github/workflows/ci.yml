@@ -75,25 +75,3 @@ jobs:
 
       - name: Test
         run: ctest --preset debug
-
-  windows-msvc:
-    name: Windows MSVC
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure
-        run: cmake -S . -B build/msvc -G "Visual Studio 17 2022" -DHYPERLINK_ENABLE_LIBUSB=OFF
-
-      - name: Build
-        run: cmake --build build/msvc --config Debug
-
-      - name: Test
-        run: ctest --test-dir build/msvc -C Debug --output-on-failure
-
-      - name: Build Release
-        run: cmake --build build/msvc --config Release
-
-      - name: Test Release
-        run: ctest --test-dir build/msvc -C Release --output-on-failure

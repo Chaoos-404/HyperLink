@@ -29,7 +29,7 @@ jobs:
             cmake_generator: Ninja
           - target: windows-x64
             os: windows-latest
-            cmake_generator: "Visual Studio 17 2022"
+            cmake_generator: Ninja
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +43,16 @@ jobs:
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja
+
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
 
       - name: Configure Unix
         if: runner.os != 'Windows'
@@ -73,28 +83,34 @@ jobs:
 
       - name: Configure Windows
         if: runner.os == 'Windows'
+        shell: msys2 {0}
         run: >
-          cmake -S . -B build/package -G "${{ matrix.cmake_generator }}" -A x64
+          cmake -S . -B build/package -G "${{ matrix.cmake_generator }}"
+          -DCMAKE_BUILD_TYPE=Release
           -DHYPERLINK_ENABLE_LIBUSB=OFF
           -DHYPERLINK_BUILD_TESTS=ON
+          -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
 
       - name: Build Windows
         if: runner.os == 'Windows'
-        run: cmake --build build/package --config Release
+        shell: msys2 {0}
+        run: cmake --build build/package
 
       - name: Test Windows
         if: runner.os == 'Windows'
-        run: ctest --test-dir build/package -C Release --output-on-failure
+        shell: msys2 {0}
+        run: ctest --test-dir build/package --output-on-failure
 
       - name: Stage Windows prebuild
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          New-Item -ItemType Directory -Force -Path "npm/prebuilds/${{ matrix.target }}" | Out-Null
-          Copy-Item build/package/Release/hyperlink.exe "npm/prebuilds/${{ matrix.target }}/"
-          Copy-Item build/package/Release/hyperlink_file.exe "npm/prebuilds/${{ matrix.target }}/"
-          Copy-Item build/package/Release/hyperlink_bench.exe "npm/prebuilds/${{ matrix.target }}/"
-          Copy-Item build/package/Release/hyperlink_probe.exe "npm/prebuilds/${{ matrix.target }}/"
+          mkdir -p "npm/prebuilds/${{ matrix.target }}"
+          cp build/package/hyperlink.exe \
+             build/package/hyperlink_file.exe \
+             build/package/hyperlink_bench.exe \
+             build/package/hyperlink_probe.exe \
+             "npm/prebuilds/${{ matrix.target }}/"
 
       - name: Upload prebuild
         uses: actions/upload-artifact@v4
