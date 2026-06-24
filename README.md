@@ -319,9 +319,9 @@ The `Release native packages` workflow attaches native archives to the GitHub Re
 The archives are named by OS and CPU, for example:
 
 ```text
-Hyperlink-0.1.0-Darwin-arm64.tar.gz
-Hyperlink-0.1.0-Linux-x86_64.tar.gz
-Hyperlink-0.1.0-Windows-AMD64.zip
+Hyperlink-0.1.0-linux-x64.tar.gz
+Hyperlink-0.1.0-macos-universal.tar.gz
+Hyperlink-0.1.0-windows-x64.zip
 ```
 
 The `Publish npm package` workflow builds each platform, downloads the native artifacts

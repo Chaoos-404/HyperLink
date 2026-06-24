@@ -26,10 +26,7 @@ jobs:
           - target: linux-x64
             os: ubuntu-latest
             generator: Ninja
-          - target: macos-x64
-            os: macos-13
-            generator: Ninja
-          - target: macos-arm64
+          - target: macos-universal
             os: macos-14
             generator: Ninja
           - target: windows-x64
@@ -60,12 +57,23 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
 
       - name: Configure Unix
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: >
           cmake -S . -B build/package -G "${{ matrix.generator }}"
           -DCMAKE_BUILD_TYPE=Release
           -DHYPERLINK_ENABLE_LIBUSB=OFF
           -DHYPERLINK_BUILD_TESTS=ON
+          -DHYPERLINK_PACKAGE_TARGET=${{ matrix.target }}
+
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        run: >
+          cmake -S . -B build/package -G "${{ matrix.generator }}"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DHYPERLINK_ENABLE_LIBUSB=OFF
+          -DHYPERLINK_BUILD_TESTS=ON
+          -DHYPERLINK_PACKAGE_TARGET=${{ matrix.target }}
 
       - name: Build Unix
         if: runner.os != 'Windows'
@@ -87,6 +95,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DHYPERLINK_ENABLE_LIBUSB=OFF
           -DHYPERLINK_BUILD_TESTS=ON
+          -DHYPERLINK_PACKAGE_TARGET=${{ matrix.target }}
           -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
 
       - name: Build Windows

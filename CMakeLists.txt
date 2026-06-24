@@ -12,6 +12,7 @@ include(GNUInstallDirs)
 option(HYPERLINK_BUILD_EXAMPLES "Build Hyperlink example programs" ON)
 option(HYPERLINK_BUILD_TESTS "Build Hyperlink tests" ON)
 option(HYPERLINK_ENABLE_LIBUSB "Enable the libusb transport backend when libusb is available" ON)
+set(HYPERLINK_PACKAGE_TARGET "" CACHE STRING "Package target suffix used by CPack")
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -152,7 +153,11 @@ else()
   set(CPACK_GENERATOR "TGZ")
 endif()
 
-set(CPACK_PACKAGE_FILE_NAME
-    "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+if(HYPERLINK_PACKAGE_TARGET)
+  set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${HYPERLINK_PACKAGE_TARGET}")
+else()
+  set(CPACK_PACKAGE_FILE_NAME
+      "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+endif()
 
 include(CPack)
