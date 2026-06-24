@@ -4,8 +4,26 @@ Hyperlink is a C++20 library skeleton for high-speed peer-to-peer data transfer 
 
 ## Install
 
-Download a native archive from GitHub Releases, extract it, and run the binary from its
-`bin/` directory:
+Package-manager install paths:
+
+```sh
+# macOS/Linux with Homebrew
+brew install Chaoos-404/hyperlink/hyperlink
+
+# Debian/Ubuntu after adding the Hyperlink APT source
+echo "deb [trusted=yes] https://chaoos-404.github.io/HyperLink stable main" | \
+  sudo tee /etc/apt/sources.list.d/hyperlink.list
+sudo apt update
+sudo apt install hyperlink
+```
+
+```powershell
+# Windows, after the manifest is accepted by winget-pkgs
+winget install Chaoos404.Hyperlink
+```
+
+You can also download a native archive from GitHub Releases, extract it, and run the
+binary from its `bin/` directory:
 
 ```sh
 ./bin/hyperlink receive
@@ -270,21 +288,25 @@ Windows may block symlink creation unless Developer Mode or elevated permissions
 ## Publishing Releases
 
 Run the `Release native packages` workflow from the GitHub Actions tab and enter a tag
-such as `v0.1.0`. You can also publish by pushing a version tag:
+such as `v0.1.1`. You can also publish by pushing a version tag:
 
 ```sh
-git tag v0.1.0
-git push HyperLink v0.1.0
+git tag v0.1.1
+git push HyperLink v0.1.1
 ```
 
 The `Release native packages` workflow attaches native archives to the GitHub Release.
 The archives are named by OS and CPU, for example:
 
 ```text
-Hyperlink-0.1.0-linux-x64.tar.gz
-Hyperlink-0.1.0-macos-universal.tar.gz
-Hyperlink-0.1.0-windows-x64.zip
+Hyperlink-0.1.1-linux-x64.tar.gz
+Hyperlink-0.1.1-macos-universal.tar.gz
+Hyperlink-0.1.1-windows-x64.zip
+hyperlink_0.1.1_amd64.deb
 ```
+
+The `Publish APT repository` workflow publishes the `.deb` release asset as a minimal
+APT repository on GitHub Pages.
 
 ## Current Milestones
 

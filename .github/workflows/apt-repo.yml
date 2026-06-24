@@ -1,0 +1,74 @@
+name: Publish APT repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.1.1"
+        required: true
+        default: "v0.1.1"
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils
+
+      - name: Download release debs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${WORKFLOW_TAG}"
+          fi
+          mkdir -p public/pool/main/h/hyperlink
+          gh release download "${tag}" --pattern '*.deb' --dir public/pool/main/h/hyperlink
+
+      - name: Generate APT metadata
+        run: |
+          set -euo pipefail
+          mkdir -p public/dists/stable/main/binary-amd64
+          cd public
+          dpkg-scanpackages --arch amd64 pool /dev/null > dists/stable/main/binary-amd64/Packages
+          gzip -9c dists/stable/main/binary-amd64/Packages > dists/stable/main/binary-amd64/Packages.gz
+          apt-ftparchive release dists/stable > dists/stable/Release
+          cat > index.html <<'HTML'
+          <!doctype html>
+          <title>Hyperlink APT Repository</title>
+          <h1>Hyperlink APT Repository</h1>
+          <pre>
+          echo "deb [trusted=yes] https://chaoos-404.github.io/HyperLink stable main" | sudo tee /etc/apt/sources.list.d/hyperlink.list
+          sudo apt update
+          sudo apt install hyperlink
+          </pre>
+          HTML
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
