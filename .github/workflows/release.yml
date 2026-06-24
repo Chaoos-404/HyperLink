@@ -117,7 +117,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
 
   publish-github-release:
@@ -145,9 +147,10 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             tag="${WORKFLOW_TAG}"
           fi
+          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
 
           if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release upload "${tag}" dist/* --clobber
+            gh release upload "${tag}" "${assets[@]}" --clobber
           else
-            gh release create "${tag}" dist/* --generate-notes --latest
+            gh release create "${tag}" "${assets[@]}" --generate-notes --latest
           fi
