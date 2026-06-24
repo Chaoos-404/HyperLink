@@ -10,7 +10,7 @@ Package-manager install paths:
 # macOS/Linux with Homebrew
 brew install Chaoos-404/hyperlink/hyperlink
 
-# Debian/Ubuntu after adding the Hyperlink APT source
+# Debian/Ubuntu
 echo "deb [trusted=yes] https://chaoos-404.github.io/HyperLink stable main" | \
   sudo tee /etc/apt/sources.list.d/hyperlink.list
 sudo apt update
@@ -307,6 +307,15 @@ hyperlink_0.1.1_amd64.deb
 
 The `Publish APT repository` workflow publishes the `.deb` release asset as a minimal
 APT repository on GitHub Pages.
+
+The Homebrew formula lives in the public tap repo:
+
+```text
+https://github.com/Chaoos-404/homebrew-hyperlink
+```
+
+WinGet manifests are kept under `packaging/winget/`. Submit those manifests to
+`microsoft/winget-pkgs` to make `winget install Chaoos404.Hyperlink` available publicly.
 
 ## Current Milestones
 
