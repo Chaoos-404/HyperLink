@@ -298,21 +298,21 @@ Windows may block symlink creation unless Developer Mode or elevated permissions
 ## Publishing Releases
 
 Run the `Release native packages` workflow from the GitHub Actions tab and enter a tag
-such as `v0.1.1`. You can also publish by pushing a version tag:
+such as `v0.1.2`. You can also publish by pushing a version tag:
 
 ```sh
-git tag v0.1.1
-git push HyperLink v0.1.1
+git tag v0.1.2
+git push HyperLink v0.1.2
 ```
 
 The `Release native packages` workflow attaches native archives to the GitHub Release.
 The archives are named by OS and CPU, for example:
 
 ```text
-Hyperlink-0.1.1-linux-x64.tar.gz
-Hyperlink-0.1.1-macos-universal.tar.gz
-Hyperlink-0.1.1-windows-x64.zip
-hyperlink_0.1.1_amd64.deb
+Hyperlink-0.1.2-linux-x64.tar.gz
+Hyperlink-0.1.2-macos-universal.tar.gz
+Hyperlink-0.1.2-windows-x64.zip
+hyperlink_0.1.2_amd64.deb
 ```
 
 The `Publish APT repository` workflow publishes the `.deb` release asset as a minimal
