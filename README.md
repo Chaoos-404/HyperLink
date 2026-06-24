@@ -101,6 +101,16 @@ Important constraints:
 
 When the OS exposes a USB4 or Thunderbolt connection as a network interface, use the TCP benchmark transport to measure the real application-level throughput.
 
+Easy mode:
+
+```sh
+# receiver
+hyperlink test receive
+
+# sender, use the receiver's USB4/Thunderbolt 169.254.x.x address
+hyperlink test send <receiver-usb4-ip>
+```
+
 On the receiving machine:
 
 ```sh

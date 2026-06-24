@@ -12,6 +12,10 @@ namespace {
 constexpr auto kDefaultTransferPort = std::string_view{"47790"};
 constexpr auto kDefaultDiscoveryPort = std::string_view{"47789"};
 constexpr auto kDefaultParallel = std::string_view{"8"};
+constexpr auto kDefaultTestPort = std::string_view{"47777"};
+constexpr auto kDefaultTestSeconds = std::string_view{"10"};
+constexpr auto kDefaultTestChunkBytes = std::string_view{"4194304"};
+constexpr auto kDefaultTestSocketBufferBytes = std::string_view{"8388608"};
 
 struct ReceiveOptions {
   std::string host{"0.0.0.0"};
@@ -31,18 +35,33 @@ struct SendOptions {
   std::string remote_name;
 };
 
+struct TestOptions {
+  bool receive{false};
+  bool send{false};
+  std::string host;
+  std::string port{kDefaultTestPort};
+  std::string parallel{kDefaultParallel};
+  std::string seconds{kDefaultTestSeconds};
+  std::string chunk_bytes{kDefaultTestChunkBytes};
+  std::string socket_buffer_bytes{kDefaultTestSocketBufferBytes};
+};
+
 void print_usage() {
   std::cout
       << "Usage:\n"
       << "  hyperlink receive [--out <dir>] [--parallel 8]\n"
       << "  hyperlink send <file-or-folder> [--name <remote-name>]\n"
+      << "  hyperlink test receive [--parallel 8]\n"
+      << "  hyperlink test send <peer-ip> [--seconds 10] [--parallel 8]\n"
       << "  hyperlink bench [hyperlink_bench args...]\n"
       << "  hyperlink probe\n\n"
       << "Advanced:\n"
       << "  hyperlink receive [--host 0.0.0.0] [--port 47790] "
          "[--discovery-port 47789] [--no-advertise]\n"
       << "  hyperlink send <file-or-folder> [--host <peer-ip>] [--port 47790] "
-         "[--parallel 8] [--discovery-port 47789]\n";
+         "[--parallel 8] [--discovery-port 47789]\n"
+      << "  hyperlink test send <peer-ip> [--port 47777] [--chunk-bytes 4194304] "
+         "[--socket-buffer-bytes 8388608]\n";
 }
 
 std::string default_download_dir() {
@@ -123,6 +142,57 @@ SendOptions parse_send(int argc, char** argv, int start_index) {
 
   if (options.file.empty()) {
     throw std::invalid_argument("send requires a file or folder path");
+  }
+
+  return options;
+}
+
+TestOptions parse_test(int argc, char** argv, int start_index) {
+  auto options = TestOptions{};
+  if (start_index >= argc) {
+    throw std::invalid_argument("test requires receive or send");
+  }
+
+  const auto mode = std::string_view{argv[start_index++]};
+  if (mode == "receive" || mode == "recv" || mode == "server") {
+    options.receive = true;
+  } else if (mode == "send" || mode == "client") {
+    options.send = true;
+  } else if (mode == "--help" || mode == "-h") {
+    print_usage();
+    std::exit(0);
+  } else {
+    throw std::invalid_argument("unknown test mode: " + std::string{mode});
+  }
+
+  for (auto index = start_index; index < argc; ++index) {
+    const auto arg = std::string_view{argv[index]};
+    if (arg == "--port") {
+      options.port = require_value(index, argc, argv, arg);
+    } else if (arg == "--parallel") {
+      options.parallel = require_value(index, argc, argv, arg);
+    } else if (arg == "--seconds") {
+      options.seconds = require_value(index, argc, argv, arg);
+    } else if (arg == "--chunk-bytes") {
+      options.chunk_bytes = require_value(index, argc, argv, arg);
+    } else if (arg == "--socket-buffer-bytes") {
+      options.socket_buffer_bytes = require_value(index, argc, argv, arg);
+    } else if (arg == "--host") {
+      options.host = require_value(index, argc, argv, arg);
+    } else if (arg == "--help" || arg == "-h") {
+      print_usage();
+      std::exit(0);
+    } else if (!arg.empty() && arg.front() == '-') {
+      throw std::invalid_argument("unknown test option: " + std::string{arg});
+    } else if (options.send && options.host.empty()) {
+      options.host = argv[index];
+    } else {
+      throw std::invalid_argument("test send accepts exactly one peer IP");
+    }
+  }
+
+  if (options.send && options.host.empty()) {
+    throw std::invalid_argument("test send requires a peer IP, usually the 169.254.x.x cable IP");
   }
 
   return options;
@@ -267,6 +337,37 @@ int run_send(char** argv, const SendOptions& options) {
   return run_command(sibling_tool(argv, "hyperlink_file"), args);
 }
 
+int run_test(char** argv, const TestOptions& options) {
+  auto args = std::vector<std::string>{};
+  if (options.receive) {
+    args = {"--server",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            options.port,
+            "--parallel",
+            options.parallel,
+            "--socket-buffer-bytes",
+            options.socket_buffer_bytes};
+  } else {
+    args = {"--client",
+            "--host",
+            options.host,
+            "--port",
+            options.port,
+            "--seconds",
+            options.seconds,
+            "--chunk-bytes",
+            options.chunk_bytes,
+            "--parallel",
+            options.parallel,
+            "--socket-buffer-bytes",
+            options.socket_buffer_bytes};
+  }
+
+  return run_command(sibling_tool(argv, "hyperlink_bench"), args);
+}
+
 int run_passthrough(char** argv, const std::string& executable,
                     const std::vector<std::string>& args) {
   return run_command(sibling_tool(argv, executable), args);
@@ -287,6 +388,9 @@ int main(int argc, char** argv) {
     }
     if (command == "send") {
       return run_send(argv, parse_send(argc, argv, 2));
+    }
+    if (command == "test" || command == "speedtest") {
+      return run_test(argv, parse_test(argc, argv, 2));
     }
     if (command == "bench") {
       return run_passthrough(argv, "hyperlink_bench", passthrough_args(argc, argv, 2));
