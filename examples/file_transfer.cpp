@@ -79,7 +79,7 @@ struct Options {
 void print_usage() {
   std::cout << "Usage:\n"
             << "  hyperlink_file --receive [--host 0.0.0.0] [--port 47790] "
-               "[--output-dir .] [--parallel 1] [--no-advertise]\n"
+               "[--output-dir .] [--out .] [--parallel 1] [--no-advertise]\n"
             << "  hyperlink_file --send --host <peer-ip> --file <path> [--port 47790] "
                "[--name <remote-name>] [--parallel 1]\n"
             << "  hyperlink_file --send --auto --file <path> [--name <remote-name>] "
@@ -132,7 +132,7 @@ Options parse_args(int argc, char** argv) {
       }
     } else if (arg == "--file") {
       options.file = require_value(arg);
-    } else if (arg == "--output-dir") {
+    } else if (arg == "--output-dir" || arg == "--out") {
       options.output_dir = require_value(arg);
     } else if (arg == "--name") {
       options.remote_name = require_value(arg);
