@@ -33,6 +33,7 @@ struct SendOptions {
   std::string parallel{kDefaultParallel};
   std::string discovery_port{kDefaultDiscoveryPort};
   std::string remote_name;
+  bool allow_lan{false};
 };
 
 struct TestOptions {
@@ -59,7 +60,7 @@ void print_usage() {
       << "  hyperlink receive [--host 0.0.0.0] [--port 47790] "
          "[--discovery-port 47789] [--no-advertise]\n"
       << "  hyperlink send <file-or-folder> [--host <peer-ip>] [--port 47790] "
-         "[--parallel 8] [--discovery-port 47789]\n"
+         "[--parallel 8] [--discovery-port 47789] [--allow-lan]\n"
       << "  hyperlink test send <peer-ip> [--port 47777] [--chunk-bytes 4194304] "
          "[--socket-buffer-bytes 8388608]\n";
 }
@@ -128,6 +129,8 @@ SendOptions parse_send(int argc, char** argv, int start_index) {
       options.parallel = require_value(index, argc, argv, arg);
     } else if (arg == "--discovery-port") {
       options.discovery_port = require_value(index, argc, argv, arg);
+    } else if (arg == "--allow-lan") {
+      options.allow_lan = true;
     } else if (arg == "--help" || arg == "-h") {
       print_usage();
       std::exit(0);
@@ -320,6 +323,9 @@ int run_send(char** argv, const SendOptions& options) {
                                        options.discovery_port};
   if (options.host.empty()) {
     args.emplace_back("--auto");
+    if (options.allow_lan) {
+      args.emplace_back("--allow-lan");
+    }
   } else {
     args.emplace_back("--host");
     args.emplace_back(options.host);

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
   Hyperlink
-  VERSION 0.1.2
+  VERSION 0.1.3
   DESCRIPTION "C++ library for high-speed peer-to-peer data transfer over USB links"
   LANGUAGES CXX)
 

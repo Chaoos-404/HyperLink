@@ -62,6 +62,7 @@ struct Options {
   bool send{false};
   bool receive{false};
   bool auto_discover{false};
+  bool allow_lan{false};
   bool advertise{true};
   std::string host{"0.0.0.0"};
   std::uint16_t port{kDefaultPort};
@@ -78,7 +79,8 @@ void print_usage() {
                "[--output-dir .] [--parallel 1] [--no-advertise]\n"
             << "  hyperlink_file --send --host <peer-ip> --file <path> [--port 47790] "
                "[--name <remote-name>] [--parallel 1]\n"
-            << "  hyperlink_file --send --auto --file <path> [--name <remote-name>]\n";
+            << "  hyperlink_file --send --auto --file <path> [--name <remote-name>] "
+               "[--allow-lan]\n";
 }
 
 std::uint16_t parse_port(const std::string& value) {
@@ -110,6 +112,8 @@ Options parse_args(int argc, char** argv) {
     } else if (arg == "--auto") {
       options.auto_discover = true;
       options.host.clear();
+    } else if (arg == "--allow-lan") {
+      options.allow_lan = true;
     } else if (arg == "--no-advertise") {
       options.advertise = false;
     } else if (arg == "--host") {
@@ -335,8 +339,21 @@ std::optional<DiscoveredReceiver> parse_discovery_response(std::string_view mess
   };
 }
 
+bool is_link_local_ipv4(const std::string& host) { return discovery_preference(host) == 0; }
+
+std::string candidate_hosts(const std::vector<DiscoveredReceiver>& candidates) {
+  auto hosts = std::string{};
+  for (const auto& candidate : candidates) {
+    if (!hosts.empty()) {
+      hosts += ", ";
+    }
+    hosts += candidate.host;
+  }
+  return hosts.empty() ? "none" : hosts;
+}
+
 DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
-                                     std::chrono::milliseconds timeout) {
+                                     std::chrono::milliseconds timeout, bool allow_lan) {
   ensure_socket_runtime();
   auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
   if (!socket.valid()) {
@@ -392,10 +409,18 @@ DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
   }
 
   if (!candidates.empty()) {
-    return *std::min_element(candidates.begin(), candidates.end(), [](const auto& left,
-                                                                      const auto& right) {
+    const auto best = *std::min_element(candidates.begin(), candidates.end(), [](const auto& left,
+                                                                                 const auto& right) {
       return discovery_preference(left.host) < discovery_preference(right.host);
     });
+    if (!allow_lan && !is_link_local_ipv4(best.host) && best.host.rfind("127.", 0) != 0) {
+      throw std::runtime_error(
+          "auto-discovery only found LAN/Wi-Fi receiver address(es): " +
+          candidate_hosts(candidates) +
+          ". Connect over USB4/Thunderbolt, then rerun with --host <receiver-169.254.x.x>. "
+          "Use --allow-lan only if you intentionally want Wi-Fi/LAN.");
+    }
+    return best;
   }
 
   throw std::runtime_error("no Hyperlink receiver discovered");
@@ -900,7 +925,8 @@ int run_send(const Options& options) {
     std::cout << "Discovering Hyperlink receiver on UDP port " << effective_options.discovery_port
               << "...\n";
     const auto receiver =
-        discover_receiver(effective_options.discovery_port, std::chrono::milliseconds{2500});
+        discover_receiver(effective_options.discovery_port, std::chrono::milliseconds{2500},
+                          effective_options.allow_lan);
     effective_options.host = receiver.host;
     effective_options.port = receiver.port;
     effective_options.parallel = receiver.parallel;
