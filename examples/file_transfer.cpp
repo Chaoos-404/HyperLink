@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -16,14 +17,32 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <cerrno>
+#include <cstring>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
 constexpr auto kDefaultPort = std::uint16_t{47790};
+constexpr auto kDefaultDiscoveryPort = std::uint16_t{47789};
 constexpr auto kChunkBytes = std::size_t{4 * 1024 * 1024};
 constexpr auto kMagic = std::array<char, 8>{'H', 'L', 'X', 'F', 'E', 'R', '3', '\0'};
 constexpr auto kHeaderBytes = std::size_t{48};
@@ -42,8 +61,11 @@ enum class TransferKind : std::uint64_t {
 struct Options {
   bool send{false};
   bool receive{false};
+  bool auto_discover{false};
+  bool advertise{true};
   std::string host{"0.0.0.0"};
   std::uint16_t port{kDefaultPort};
+  std::uint16_t discovery_port{kDefaultDiscoveryPort};
   std::uint32_t parallel{1};
   std::filesystem::path file;
   std::filesystem::path output_dir{"."};
@@ -53,9 +75,10 @@ struct Options {
 void print_usage() {
   std::cout << "Usage:\n"
             << "  hyperlink_file --receive [--host 0.0.0.0] [--port 47790] "
-               "[--output-dir .] [--parallel 1]\n"
+               "[--output-dir .] [--parallel 1] [--no-advertise]\n"
             << "  hyperlink_file --send --host <peer-ip> --file <path> [--port 47790] "
-               "[--name <remote-name>] [--parallel 1]\n";
+               "[--name <remote-name>] [--parallel 1]\n"
+            << "  hyperlink_file --send --auto --file <path> [--name <remote-name>]\n";
 }
 
 std::uint16_t parse_port(const std::string& value) {
@@ -84,10 +107,17 @@ Options parse_args(int argc, char** argv) {
     } else if (arg == "--receive") {
       options.receive = true;
       options.host = "0.0.0.0";
+    } else if (arg == "--auto") {
+      options.auto_discover = true;
+      options.host.clear();
+    } else if (arg == "--no-advertise") {
+      options.advertise = false;
     } else if (arg == "--host") {
       options.host = require_value(arg);
     } else if (arg == "--port") {
       options.port = parse_port(require_value(arg));
+    } else if (arg == "--discovery-port") {
+      options.discovery_port = parse_port(require_value(arg));
     } else if (arg == "--parallel") {
       options.parallel = static_cast<std::uint32_t>(std::stoul(require_value(arg)));
       if (options.parallel == 0) {
@@ -114,6 +144,9 @@ Options parse_args(int argc, char** argv) {
   if (options.send && options.file.empty()) {
     throw std::invalid_argument("--send requires --file");
   }
+  if (options.receive && options.auto_discover) {
+    throw std::invalid_argument("--auto is only valid with --send");
+  }
 
   if (static_cast<std::uint32_t>(options.port) + options.parallel - 1U > 65535U) {
     throw std::invalid_argument("port plus parallel stream count exceeds 65535");
@@ -121,6 +154,281 @@ Options parse_args(int argc, char** argv) {
 
   return options;
 }
+
+#if defined(_WIN32)
+using UdpSocket = SOCKET;
+constexpr UdpSocket kInvalidUdpSocket = INVALID_SOCKET;
+
+class SocketRuntime {
+public:
+  SocketRuntime() {
+    auto data = WSADATA{};
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+      throw std::runtime_error("WSAStartup failed");
+    }
+  }
+
+  ~SocketRuntime() { WSACleanup(); }
+};
+
+void ensure_socket_runtime() {
+  static const SocketRuntime runtime;
+  (void)runtime;
+}
+
+void close_udp_socket(UdpSocket socket) {
+  if (socket != kInvalidUdpSocket) {
+    closesocket(socket);
+  }
+}
+
+std::string socket_error() { return "Winsock error " + std::to_string(WSAGetLastError()); }
+#else
+using UdpSocket = int;
+constexpr UdpSocket kInvalidUdpSocket = -1;
+
+void ensure_socket_runtime() {}
+
+void close_udp_socket(UdpSocket socket) {
+  if (socket != kInvalidUdpSocket) {
+    close(socket);
+  }
+}
+
+std::string socket_error() { return std::strerror(errno); }
+#endif
+
+class UdpSocketHandle {
+public:
+  UdpSocketHandle() = default;
+  explicit UdpSocketHandle(UdpSocket socket) : socket_(socket) {}
+  ~UdpSocketHandle() { reset(); }
+
+  UdpSocketHandle(const UdpSocketHandle&) = delete;
+  auto operator=(const UdpSocketHandle&) -> UdpSocketHandle& = delete;
+
+  UdpSocketHandle(UdpSocketHandle&& other) noexcept
+      : socket_(std::exchange(other.socket_, kInvalidUdpSocket)) {}
+
+  auto operator=(UdpSocketHandle&& other) noexcept -> UdpSocketHandle& {
+    if (this != &other) {
+      reset();
+      socket_ = std::exchange(other.socket_, kInvalidUdpSocket);
+    }
+    return *this;
+  }
+
+  [[nodiscard]] UdpSocket get() const { return socket_; }
+  [[nodiscard]] bool valid() const { return socket_ != kInvalidUdpSocket; }
+
+  void reset(UdpSocket socket = kInvalidUdpSocket) {
+    if (socket_ != kInvalidUdpSocket) {
+      close_udp_socket(socket_);
+    }
+    socket_ = socket;
+  }
+
+private:
+  UdpSocket socket_{kInvalidUdpSocket};
+};
+
+void set_socket_timeout(UdpSocket socket, std::chrono::milliseconds timeout) {
+#if defined(_WIN32)
+  const auto value = static_cast<DWORD>(timeout.count());
+  setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&value), sizeof(value));
+#else
+  auto value = timeval{
+      .tv_sec = static_cast<time_t>(timeout.count() / 1000),
+      .tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000),
+  };
+  setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value));
+#endif
+}
+
+void set_reuse_address(UdpSocket socket) {
+  const auto enabled = 1;
+  setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&enabled),
+             sizeof(enabled));
+}
+
+void set_broadcast(UdpSocket socket) {
+  const auto enabled = 1;
+  setsockopt(socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&enabled),
+             sizeof(enabled));
+}
+
+sockaddr_in make_ipv4_address(const std::string& host, std::uint16_t port) {
+  auto address = sockaddr_in{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(port);
+  if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
+    throw std::runtime_error("invalid IPv4 address: " + host);
+  }
+  return address;
+}
+
+std::string ipv4_to_string(const sockaddr_in& address) {
+  auto buffer = std::array<char, INET_ADDRSTRLEN>{};
+  const auto* result = inet_ntop(AF_INET, &address.sin_addr, buffer.data(), buffer.size());
+  if (result == nullptr) {
+    return {};
+  }
+  return buffer.data();
+}
+
+struct DiscoveredReceiver {
+  std::string host;
+  std::uint16_t port{kDefaultPort};
+  std::uint32_t parallel{1};
+  std::string name;
+};
+
+std::string local_receiver_name() {
+  auto buffer = std::array<char, 256>{};
+  if (gethostname(buffer.data(), static_cast<int>(buffer.size() - 1)) == 0) {
+    return buffer.data();
+  }
+  return "hyperlink-receiver";
+}
+
+std::optional<DiscoveredReceiver> parse_discovery_response(std::string_view message,
+                                                           const std::string& source_host) {
+  auto stream = std::istringstream{std::string{message}};
+  auto magic = std::string{};
+  auto port = std::uint32_t{0};
+  auto parallel = std::uint32_t{0};
+  auto name = std::string{};
+  stream >> magic >> port >> parallel >> name;
+  if (magic != "HLINK_FILE_V1" || port == 0 || port > 65535 || parallel == 0) {
+    return std::nullopt;
+  }
+  return DiscoveredReceiver{
+      .host = source_host,
+      .port = static_cast<std::uint16_t>(port),
+      .parallel = parallel,
+      .name = name.empty() ? source_host : name,
+  };
+}
+
+DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
+                                     std::chrono::milliseconds timeout) {
+  ensure_socket_runtime();
+  auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
+  if (!socket.valid()) {
+    throw std::runtime_error("failed to create discovery socket: " + socket_error());
+  }
+
+  set_broadcast(socket.get());
+  set_socket_timeout(socket.get(), timeout);
+  const auto request = std::string{"HLINK_DISCOVER_V1 hyperlink-file"};
+  for (const auto& destination : {"255.255.255.255", "169.254.255.255", "127.0.0.1"}) {
+    const auto address = make_ipv4_address(destination, discovery_port);
+    sendto(socket.get(), request.data(), static_cast<int>(request.size()), 0,
+           reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto buffer = std::array<char, 512>{};
+    auto source = sockaddr_in{};
+#if defined(_WIN32)
+    auto source_size = static_cast<int>(sizeof(source));
+    const auto received = recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size() - 1),
+                                   0, reinterpret_cast<sockaddr*>(&source), &source_size);
+#else
+    auto source_size = socklen_t{sizeof(source)};
+    const auto received = recvfrom(socket.get(), buffer.data(), buffer.size() - 1, 0,
+                                   reinterpret_cast<sockaddr*>(&source), &source_size);
+#endif
+    if (received <= 0) {
+      continue;
+    }
+    const auto source_host = ipv4_to_string(source);
+    if (auto parsed = parse_discovery_response(
+            std::string_view{buffer.data(), static_cast<std::size_t>(received)}, source_host)) {
+      return *parsed;
+    }
+  }
+
+  throw std::runtime_error("no Hyperlink receiver discovered");
+}
+
+class DiscoveryResponder {
+public:
+  DiscoveryResponder(const Options& options)
+      : discovery_port_(options.discovery_port), transfer_port_(options.port),
+        parallel_(options.parallel), name_(local_receiver_name()) {}
+
+  ~DiscoveryResponder() { stop(); }
+
+  void start() {
+    running_ = true;
+    thread_ = std::thread{[this] { run(); }};
+  }
+
+  void stop() {
+    running_ = false;
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+private:
+  void run() {
+    try {
+      ensure_socket_runtime();
+      auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
+      if (!socket.valid()) {
+        return;
+      }
+      set_reuse_address(socket.get());
+      set_socket_timeout(socket.get(), std::chrono::milliseconds{500});
+
+      auto bind_address = sockaddr_in{};
+      bind_address.sin_family = AF_INET;
+      bind_address.sin_port = htons(discovery_port_);
+      bind_address.sin_addr.s_addr = htonl(INADDR_ANY);
+      if (bind(socket.get(), reinterpret_cast<const sockaddr*>(&bind_address),
+               sizeof(bind_address)) != 0) {
+        return;
+      }
+
+      const auto response = "HLINK_FILE_V1 " + std::to_string(transfer_port_) + " " +
+                            std::to_string(parallel_) + " " + name_;
+      while (running_) {
+        auto buffer = std::array<char, 512>{};
+        auto source = sockaddr_in{};
+#if defined(_WIN32)
+        auto source_size = static_cast<int>(sizeof(source));
+        const auto received =
+            recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size() - 1), 0,
+                     reinterpret_cast<sockaddr*>(&source), &source_size);
+#else
+        auto source_size = socklen_t{sizeof(source)};
+        const auto received = recvfrom(socket.get(), buffer.data(), buffer.size() - 1, 0,
+                                       reinterpret_cast<sockaddr*>(&source), &source_size);
+#endif
+        if (received <= 0) {
+          continue;
+        }
+        const auto request = std::string_view{buffer.data(), static_cast<std::size_t>(received)};
+        if (request.find("HLINK_DISCOVER_V1") != 0) {
+          continue;
+        }
+        sendto(socket.get(), response.data(), static_cast<int>(response.size()), 0,
+               reinterpret_cast<const sockaddr*>(&source), source_size);
+      }
+    } catch (...) {
+    }
+  }
+
+  std::uint16_t discovery_port_{kDefaultDiscoveryPort};
+  std::uint16_t transfer_port_{kDefaultPort};
+  std::uint32_t parallel_{1};
+  std::string name_;
+  std::atomic_bool running_{false};
+  std::thread thread_;
+};
 
 void write_u64_be(std::span<std::byte> buffer, std::uint64_t value) {
   for (auto index = std::size_t{0}; index < 8; ++index) {
@@ -539,43 +847,58 @@ void send_directory_items(const Options& options, const std::vector<DirectoryIte
 }
 
 int run_send(const Options& options) {
-  if (!std::filesystem::exists(options.file)) {
-    throw std::runtime_error("path does not exist: " + options.file.string());
+  auto effective_options = options;
+  if (effective_options.auto_discover) {
+    std::cout << "Discovering Hyperlink receiver on UDP port " << effective_options.discovery_port
+              << "...\n";
+    const auto receiver =
+        discover_receiver(effective_options.discovery_port, std::chrono::milliseconds{2500});
+    effective_options.host = receiver.host;
+    effective_options.port = receiver.port;
+    effective_options.parallel = receiver.parallel;
+    std::cout << "Discovered " << receiver.name << " at " << receiver.host << ":" << receiver.port
+              << " with " << receiver.parallel << " stream(s)\n";
   }
 
-  auto transfer_path = options.file;
+  if (!std::filesystem::exists(effective_options.file)) {
+    throw std::runtime_error("path does not exist: " + effective_options.file.string());
+  }
+
+  auto transfer_path = effective_options.file;
   auto kind = TransferKind::File;
   auto payload_size = std::uint64_t{0};
 
-  if (std::filesystem::is_directory(options.file)) {
-    if (!options.remote_name.empty()) {
+  if (std::filesystem::is_directory(effective_options.file)) {
+    if (!effective_options.remote_name.empty()) {
       throw std::runtime_error("--name is not supported for directory transfers yet");
     }
     kind = TransferKind::DirectoryTar;
     payload_size = kStreamingPayloadSize;
-  } else if (!std::filesystem::is_regular_file(options.file)) {
-    throw std::runtime_error("path is not a regular file or directory: " + options.file.string());
+  } else if (!std::filesystem::is_regular_file(effective_options.file)) {
+    throw std::runtime_error("path is not a regular file or directory: " +
+                             effective_options.file.string());
   } else {
     payload_size = std::filesystem::file_size(transfer_path);
   }
 
-  auto remote_name =
-      options.remote_name.empty() ? options.file.filename().string() : options.remote_name;
+  auto remote_name = effective_options.remote_name.empty()
+                         ? effective_options.file.filename().string()
+                         : effective_options.remote_name;
   remote_name = safe_file_name(std::move(remote_name));
 
   auto sent = std::uint64_t{0};
   const auto started = std::chrono::steady_clock::now();
 
-  if (std::filesystem::is_directory(options.file) && options.parallel > 1) {
-    const auto items = collect_directory_items(options.file);
-    const auto partitions = partition_directory_items(items, options.parallel);
-    auto results = std::vector<StreamResult>(options.parallel);
+  if (std::filesystem::is_directory(effective_options.file) && effective_options.parallel > 1) {
+    const auto items = collect_directory_items(effective_options.file);
+    const auto partitions = partition_directory_items(items, effective_options.parallel);
+    auto results = std::vector<StreamResult>(effective_options.parallel);
     auto threads = std::vector<std::thread>{};
-    threads.reserve(options.parallel);
+    threads.reserve(effective_options.parallel);
 
-    for (auto stream = std::uint32_t{0}; stream < options.parallel; ++stream) {
+    for (auto stream = std::uint32_t{0}; stream < effective_options.parallel; ++stream) {
       threads.emplace_back([&, stream] {
-        send_directory_items(options, partitions[stream].items, stream, results[stream]);
+        send_directory_items(effective_options, partitions[stream].items, stream, results[stream]);
       });
     }
 
@@ -586,9 +909,10 @@ int run_send(const Options& options) {
     rethrow_first_error(results);
     sent = total_bytes(results);
   } else if (kind == TransferKind::DirectoryTar) {
-    std::cout << "Connecting to " << options.host << ":" << options.port << '\n';
-    auto session =
-        connect_session(hyperlink::make_tcp_client_transport(endpoint_for_stream(options, 0)));
+    std::cout << "Connecting to " << effective_options.host << ":" << effective_options.port
+              << '\n';
+    auto session = connect_session(
+        hyperlink::make_tcp_client_transport(endpoint_for_stream(effective_options, 0)));
     const auto header =
         make_header(kind, payload_size, remote_name.size(), 0, kStreamingPayloadSize);
     static_cast<void>(session.send(header));
@@ -596,7 +920,7 @@ int run_send(const Options& options) {
         session.send(std::as_bytes(std::span<const char>{remote_name.data(), remote_name.size()})));
 
     auto buffer = std::vector<std::byte>(kChunkBytes);
-    const auto command = tar_create_command(options.file);
+    const auto command = tar_create_command(effective_options.file);
     auto* pipe = open_pipe(command, "r");
     if (pipe == nullptr) {
       throw std::runtime_error("failed to start command: " + command);
@@ -620,15 +944,16 @@ int run_send(const Options& options) {
     close_pipe_checked(pipe, command);
     session.close();
   } else {
-    auto results = std::vector<StreamResult>(options.parallel);
+    auto results = std::vector<StreamResult>(effective_options.parallel);
     auto threads = std::vector<std::thread>{};
-    threads.reserve(options.parallel);
+    threads.reserve(effective_options.parallel);
 
-    for (auto stream = std::uint32_t{0}; stream < options.parallel; ++stream) {
-      const auto [offset, size] = byte_range_for_stream(payload_size, stream, options.parallel);
+    for (auto stream = std::uint32_t{0}; stream < effective_options.parallel; ++stream) {
+      const auto [offset, size] =
+          byte_range_for_stream(payload_size, stream, effective_options.parallel);
       threads.emplace_back([&, stream, offset, size] {
-        send_file_range(options, transfer_path, remote_name, payload_size, offset, size, stream,
-                        results[stream]);
+        send_file_range(effective_options, transfer_path, remote_name, payload_size, offset, size,
+                        stream, results[stream]);
       });
     }
 
@@ -937,6 +1262,12 @@ void receive_file_part(const Options& options, std::uint32_t stream, ReceiveShar
 
 int run_receive(const Options& options) {
   std::filesystem::create_directories(options.output_dir);
+  auto responder = std::optional<DiscoveryResponder>{};
+  if (options.advertise) {
+    responder.emplace(options);
+    responder->start();
+    std::cout << "Advertising receiver on UDP port " << options.discovery_port << '\n';
+  }
 
   if (options.parallel > 1) {
     std::cout << "Listening on " << options.host << ":" << options.port << ".."

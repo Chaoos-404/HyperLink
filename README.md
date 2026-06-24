@@ -2,6 +2,34 @@
 
 Hyperlink is a C++20 library skeleton for high-speed peer-to-peer data transfer between computers over a USB link, with automatic peer discovery and connection configuration.
 
+## Install
+
+The easiest install path is npm:
+
+Install the published CLI with npm:
+
+```sh
+npm install -g @chaoos-404/hyperlink
+```
+
+Then run:
+
+```sh
+hyperlink receive
+hyperlink send /path/to/file-or-directory
+```
+
+You can also download a native archive from GitHub Releases, extract it, and run the
+binary from its `bin/` directory:
+
+```sh
+./bin/hyperlink receive
+./bin/hyperlink send /path/to/file-or-directory
+```
+
+The release archives include the CLI tools, C++ headers, static library, and CMake package
+files for developers.
+
 ## Development Setup
 
 On macOS:
@@ -151,36 +179,41 @@ ssh user@169.254.119.3 'tail -f ~/Hyperlink/hyperlink_server.log'
 
 ## File Transfer
 
-Use `hyperlink_file` for one-shot file transfer over the same USB4/Thunderbolt network path.
+Use `hyperlink` for one-shot file transfer over the same USB4/Thunderbolt network path.
 
 On the receiving computer:
 
 ```sh
-./build/release/hyperlink_file --receive --host 0.0.0.0 --port 47790 --output-dir ~/Downloads
+hyperlink receive
 ```
 
-On the sending computer:
+Receivers advertise themselves on UDP port `47789` by default. On the sending computer,
+let Hyperlink discover the receiver and copy the receiver's transfer settings:
 
 ```sh
-./build/release/hyperlink_file --send --host <receiver-bridge0-ip> --port 47790 --file /path/to/file
+hyperlink send /path/to/file-or-directory
 ```
 
-Example using the Mac mini Thunderbolt Bridge IP:
+You can still target a known address manually:
 
 ```sh
-./build/release/hyperlink_file --send --host 169.254.50.61 --port 47790 --file ./large-video.mov
+hyperlink send /path/to/file-or-directory --host <receiver-bridge0-ip>
 ```
 
-The receiver saves only the base filename, so paths from the sender are not recreated on the receiving machine.
+Use `hyperlink receive --out <dir>` to choose the output directory. Use `--no-advertise`
+on the receiver to disable discovery. Use `--discovery-port <port>` on both sides if
+`47789` is already in use.
+
+The receiver saves only the base filename for single files, so paths from the sender are
+not recreated on the receiving machine.
 
 Directories and `.app` bundles can be sent directly:
 
 ```sh
-./build/release/hyperlink_file --send --host 169.254.50.61 --port 47790 \
-  --file /Applications/MATLAB_R2026a.app
+hyperlink send /Applications/MATLAB_R2026a.app
 ```
 
-For large regular files and big directories, use parallel streams:
+The friendly CLI defaults to `--parallel 8`. The equivalent advanced commands are:
 
 ```sh
 # receiver
@@ -196,7 +229,10 @@ For large regular files and big directories, use parallel streams:
   --file /Applications/MATLAB_R2026a.app --parallel 8
 ```
 
-With `--parallel`, directory transfer uses Hyperlink's native directory mode instead of tar. It transfers files across multiple sockets, recreates directories, preserves regular file permissions, and recreates symlinks. It can still be limited by many small filesystem writes, but it avoids the slow pre-tar step.
+With parallel directory transfer, Hyperlink uses its native directory mode instead of tar.
+It transfers files across multiple sockets, recreates directories, preserves regular file
+permissions, and recreates symlinks. It can still be limited by many small filesystem
+writes, but it avoids the slow pre-tar step.
 
 ## Windows Laptop Receiver
 
@@ -229,23 +265,71 @@ Allow the benchmark and file-transfer ports through Windows Firewall:
 ```powershell
 New-NetFirewallRule -DisplayName "Hyperlink Bench" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47777-47797
 New-NetFirewallRule -DisplayName "Hyperlink File" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47790-47797
+New-NetFirewallRule -DisplayName "Hyperlink Discovery" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 47789
 ```
 
 Start a Windows receiver:
 
 ```sh
-./build/release/hyperlink_file.exe --receive --host 0.0.0.0 --port 47790 \
-  --output-dir /c/Users/<your-user>/Downloads --parallel 8
+hyperlink receive
 ```
 
 Send from macOS to the Windows laptop:
 
 ```sh
-./build/release/hyperlink_file --send --host <windows-usb4-ip> --port 47790 \
-  --file /path/to/file-or-directory --parallel 8
+hyperlink send /path/to/file-or-directory
 ```
 
 Windows may block symlink creation unless Developer Mode or elevated permissions are enabled. If symlink creation fails, Hyperlink writes a small `*.hyperlink-symlink.txt` file containing the symlink target instead of failing the whole transfer.
+
+## Publishing to npm
+
+Pushing a `v*` tag now creates two publish flows:
+
+- `Release native packages` creates downloadable GitHub Release archives.
+- `Publish npm package` publishes the prebuilt CLI package to npm.
+
+To create a GitHub Release only, run the `Release native packages` workflow manually
+from the GitHub Actions tab and enter a tag such as `v0.1.0`.
+
+The npm package is published by GitHub Actions from release tags. The package contains
+prebuilt native binaries for:
+
+- Linux x64
+- macOS x64
+- macOS arm64
+- Windows x64
+
+The npm package name is currently `@chaoos-404/hyperlink`. Change the `name` field in
+`package.json` before the first publish if your npm username or organization scope is
+different.
+
+To publish with an npm automation token:
+
+1. Create an npm access token with publish permission.
+2. Add it to the GitHub repository secrets as `NPM_TOKEN`.
+3. Create and push a version tag:
+
+```sh
+git tag v0.1.0
+git push HyperLink v0.1.0
+```
+
+The `Release native packages` workflow attaches native archives to the GitHub Release.
+The archives are named by OS and CPU, for example:
+
+```text
+Hyperlink-0.1.0-Darwin-arm64.tar.gz
+Hyperlink-0.1.0-Linux-x86_64.tar.gz
+Hyperlink-0.1.0-Windows-AMD64.zip
+```
+
+The `Publish npm package` workflow builds each platform, downloads the native artifacts
+into `npm/prebuilds/`, runs a package smoke test, and publishes to npm.
+
+You can also configure npm Trusted Publishing for this repository and run the same
+workflow without `NPM_TOKEN`. The workflow already grants the `id-token: write`
+permission required for provenance publishing.
 
 ## Current Milestones
 

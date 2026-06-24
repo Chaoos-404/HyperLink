@@ -1,0 +1,142 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-native:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+            cmake_generator: Ninja
+          - target: macos-x64
+            os: macos-13
+            cmake_generator: Ninja
+          - target: macos-arm64
+            os: macos-14
+            cmake_generator: Ninja
+          - target: windows-x64
+            os: windows-latest
+            cmake_generator: "Visual Studio 17 2022"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - name: Configure Unix
+        if: runner.os != 'Windows'
+        run: >
+          cmake -S . -B build/package -G "${{ matrix.cmake_generator }}"
+          -DCMAKE_BUILD_TYPE=Release
+          -DHYPERLINK_ENABLE_LIBUSB=OFF
+          -DHYPERLINK_BUILD_TESTS=ON
+
+      - name: Build Unix
+        if: runner.os != 'Windows'
+        run: cmake --build build/package
+
+      - name: Test Unix
+        if: runner.os != 'Windows'
+        run: ctest --test-dir build/package --output-on-failure
+
+      - name: Stage Unix prebuild
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p "npm/prebuilds/${{ matrix.target }}"
+          cp build/package/hyperlink \
+             build/package/hyperlink_file \
+             build/package/hyperlink_bench \
+             build/package/hyperlink_probe \
+             "npm/prebuilds/${{ matrix.target }}/"
+          chmod 755 npm/prebuilds/${{ matrix.target }}/hyperlink*
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        run: >
+          cmake -S . -B build/package -G "${{ matrix.cmake_generator }}" -A x64
+          -DHYPERLINK_ENABLE_LIBUSB=OFF
+          -DHYPERLINK_BUILD_TESTS=ON
+
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        run: cmake --build build/package --config Release
+
+      - name: Test Windows
+        if: runner.os == 'Windows'
+        run: ctest --test-dir build/package -C Release --output-on-failure
+
+      - name: Stage Windows prebuild
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "npm/prebuilds/${{ matrix.target }}" | Out-Null
+          Copy-Item build/package/Release/hyperlink.exe "npm/prebuilds/${{ matrix.target }}/"
+          Copy-Item build/package/Release/hyperlink_file.exe "npm/prebuilds/${{ matrix.target }}/"
+          Copy-Item build/package/Release/hyperlink_bench.exe "npm/prebuilds/${{ matrix.target }}/"
+          Copy-Item build/package/Release/hyperlink_probe.exe "npm/prebuilds/${{ matrix.target }}/"
+
+      - name: Upload prebuild
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: npm/prebuilds/${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: build-native
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Download native prebuilds
+        uses: actions/download-artifact@v4
+        with:
+          path: npm/prebuilds
+
+      - name: Inspect package payload
+        run: |
+          find npm/prebuilds -maxdepth 2 -type f | sort
+          node npm/hyperlink.js --help
+          npm pack --dry-run
+
+      - name: Publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "${NPM_TOKEN}" ]; then
+            export NODE_AUTH_TOKEN="${NPM_TOKEN}"
+          fi
+          npm publish --provenance --access public

@@ -6,6 +6,9 @@ project(
   DESCRIPTION "C++ library for high-speed peer-to-peer data transfer over USB links"
   LANGUAGES CXX)
 
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
+
 option(HYPERLINK_BUILD_EXAMPLES "Build Hyperlink example programs" ON)
 option(HYPERLINK_BUILD_TESTS "Build Hyperlink tests" ON)
 option(HYPERLINK_ENABLE_LIBUSB "Enable the libusb transport backend when libusb is available" ON)
@@ -79,6 +82,10 @@ if(HYPERLINK_BUILD_EXAMPLES)
 
   add_executable(hyperlink_file examples/file_transfer.cpp)
   target_link_libraries(hyperlink_file PRIVATE Hyperlink::hyperlink)
+
+  add_executable(hyperlink_cli examples/cli.cpp)
+  set_target_properties(hyperlink_cli PROPERTIES OUTPUT_NAME hyperlink)
+  target_compile_features(hyperlink_cli PRIVATE cxx_std_20)
 endif()
 
 if(HYPERLINK_BUILD_TESTS)
@@ -91,3 +98,61 @@ if(HYPERLINK_BUILD_TESTS)
   target_link_libraries(hyperlink_tests PRIVATE Hyperlink::hyperlink)
   add_test(NAME hyperlink_tests COMMAND hyperlink_tests)
 endif()
+
+install(
+  TARGETS hyperlink
+  EXPORT HyperlinkTargets
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+if(HYPERLINK_BUILD_EXAMPLES)
+  install(
+    TARGETS hyperlink_cli hyperlink_file hyperlink_bench hyperlink_probe
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+
+install(
+  DIRECTORY include/
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+install(
+  EXPORT HyperlinkTargets
+  NAMESPACE Hyperlink::
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Hyperlink")
+
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/HyperlinkConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion)
+
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/HyperlinkConfig.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/HyperlinkConfig.cmake"
+  INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Hyperlink")
+
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/HyperlinkConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/HyperlinkConfigVersion.cmake"
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Hyperlink")
+
+set(CPACK_PACKAGE_NAME "Hyperlink")
+set(CPACK_PACKAGE_VENDOR "Hyperlink contributors")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Hyperlink")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP")
+else()
+  set(CPACK_GENERATOR "TGZ")
+endif()
+
+set(CPACK_PACKAGE_FILE_NAME
+    "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+
+include(CPack)

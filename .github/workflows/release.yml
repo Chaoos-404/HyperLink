@@ -1,0 +1,127 @@
+name: Release native packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+        default: "v0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+            generator: Ninja
+          - target: macos-x64
+            os: macos-13
+            generator: Ninja
+          - target: macos-arm64
+            os: macos-14
+            generator: Ninja
+          - target: windows-x64
+            os: windows-latest
+            generator: "Visual Studio 17 2022"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - name: Configure Unix
+        if: runner.os != 'Windows'
+        run: >
+          cmake -S . -B build/package -G "${{ matrix.generator }}"
+          -DCMAKE_BUILD_TYPE=Release
+          -DHYPERLINK_ENABLE_LIBUSB=OFF
+          -DHYPERLINK_BUILD_TESTS=ON
+
+      - name: Build Unix
+        if: runner.os != 'Windows'
+        run: cmake --build build/package
+
+      - name: Test Unix
+        if: runner.os != 'Windows'
+        run: ctest --test-dir build/package --output-on-failure
+
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        run: cpack --config build/package/CPackConfig.cmake -B dist
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        run: >
+          cmake -S . -B build/package -G "${{ matrix.generator }}" -A x64
+          -DHYPERLINK_ENABLE_LIBUSB=OFF
+          -DHYPERLINK_BUILD_TESTS=ON
+
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        run: cmake --build build/package --config Release
+
+      - name: Test Windows
+        if: runner.os == 'Windows'
+        run: ctest --test-dir build/package -C Release --output-on-failure
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: cpack -C Release --config build/package/CPackConfig.cmake -B dist
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-github-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show release assets
+        run: find dist -maxdepth 1 -type f -print | sort
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${WORKFLOW_TAG}"
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" dist/* --clobber
+          else
+            gh release create "${tag}" dist/* --generate-notes --latest
+          fi

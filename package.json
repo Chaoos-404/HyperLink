@@ -1,0 +1,41 @@
+{
+  "name": "@chaoos-404/hyperlink",
+  "version": "0.1.0",
+  "description": "Cross-platform CLI for high-speed peer-to-peer file transfer over USB4/Thunderbolt network links.",
+  "bin": {
+    "hyperlink": "npm/hyperlink.js"
+  },
+  "files": [
+    "npm/hyperlink.js",
+    "npm/prebuilds/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "smoke": "node npm/hyperlink.js --help",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "keywords": [
+    "usb4",
+    "thunderbolt",
+    "file-transfer",
+    "peer-to-peer",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chaoos-404/HyperLink.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Chaoos-404/HyperLink/issues"
+  },
+  "homepage": "https://github.com/Chaoos-404/HyperLink#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
