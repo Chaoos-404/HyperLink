@@ -1,4 +1,6 @@
 #include <cstdlib>
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -6,6 +8,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#endif
 
 namespace {
 
@@ -296,6 +302,24 @@ std::string shell_quote(const std::string& value) {
 std::string shell_quote(const std::filesystem::path& path) { return shell_quote(path.string()); }
 
 int run_command(const std::filesystem::path& executable, const std::vector<std::string>& args) {
+#if defined(_WIN32)
+  auto argv_storage = std::vector<std::string>{executable.string()};
+  argv_storage.insert(argv_storage.end(), args.begin(), args.end());
+
+  auto argv = std::vector<const char*>{};
+  argv.reserve(argv_storage.size() + 1);
+  for (const auto& arg : argv_storage) {
+    argv.push_back(arg.c_str());
+  }
+  argv.push_back(nullptr);
+
+  const auto result = _spawnv(_P_WAIT, executable.string().c_str(), argv.data());
+  if (result == -1) {
+    throw std::runtime_error("failed to launch " + executable.string() + ": " +
+                             std::strerror(errno));
+  }
+  return result;
+#else
   auto command = shell_quote(executable);
   for (const auto& arg : args) {
     command += " ";
@@ -304,6 +328,7 @@ int run_command(const std::filesystem::path& executable, const std::vector<std::
 
   const auto result = std::system(command.c_str());
   return result == 0 ? 0 : 1;
+#endif
 }
 
 int run_receive(char** argv, const ReceiveOptions& options) {
