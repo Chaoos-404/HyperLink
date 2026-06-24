@@ -4,23 +4,8 @@ Hyperlink is a C++20 library skeleton for high-speed peer-to-peer data transfer 
 
 ## Install
 
-The easiest install path is npm:
-
-Install the published CLI with npm:
-
-```sh
-npm install -g @chaoos-404/hyperlink
-```
-
-Then run:
-
-```sh
-hyperlink receive
-hyperlink send /path/to/file-or-directory
-```
-
-You can also download a native archive from GitHub Releases, extract it, and run the
-binary from its `bin/` directory:
+Download a native archive from GitHub Releases, extract it, and run the binary from its
+`bin/` directory:
 
 ```sh
 ./bin/hyperlink receive
@@ -282,33 +267,10 @@ hyperlink send /path/to/file-or-directory
 
 Windows may block symlink creation unless Developer Mode or elevated permissions are enabled. If symlink creation fails, Hyperlink writes a small `*.hyperlink-symlink.txt` file containing the symlink target instead of failing the whole transfer.
 
-## Publishing to npm
+## Publishing Releases
 
-Pushing a `v*` tag now creates two publish flows:
-
-- `Release native packages` creates downloadable GitHub Release archives.
-- `Publish npm package` publishes the prebuilt CLI package to npm.
-
-To create a GitHub Release only, run the `Release native packages` workflow manually
-from the GitHub Actions tab and enter a tag such as `v0.1.0`.
-
-The npm package is published by GitHub Actions from release tags. The package contains
-prebuilt native binaries for:
-
-- Linux x64
-- macOS x64
-- macOS arm64
-- Windows x64
-
-The npm package name is currently `@chaoos-404/hyperlink`. Change the `name` field in
-`package.json` before the first publish if your npm username or organization scope is
-different.
-
-To publish with an npm automation token:
-
-1. Create an npm access token with publish permission.
-2. Add it to the GitHub repository secrets as `NPM_TOKEN`.
-3. Create and push a version tag:
+Run the `Release native packages` workflow from the GitHub Actions tab and enter a tag
+such as `v0.1.0`. You can also publish by pushing a version tag:
 
 ```sh
 git tag v0.1.0
@@ -323,13 +285,6 @@ Hyperlink-0.1.0-linux-x64.tar.gz
 Hyperlink-0.1.0-macos-universal.tar.gz
 Hyperlink-0.1.0-windows-x64.zip
 ```
-
-The `Publish npm package` workflow builds each platform, downloads the native artifacts
-into `npm/prebuilds/`, runs a package smoke test, and publishes to npm.
-
-You can also configure npm Trusted Publishing for this repository and run the same
-workflow without `NPM_TOKEN`. The workflow already grants the `id-token: write`
-permission required for provenance publishing.
 
 ## Current Milestones
 
