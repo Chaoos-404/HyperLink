@@ -1,9 +1,11 @@
 #pragma once
 
 #include "hyperlink/export.hpp"
+#include "hyperlink/network_transport.hpp"
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -42,6 +44,17 @@ class HYPERLINK_API PeerDiscovery {
 public:
   [[nodiscard]] std::vector<DiscoveredPeer> discover(const PeerDiscoveryOptions& options);
   [[nodiscard]] DiscoveredPeer select_fastest(const PeerDiscoveryOptions& options);
+  [[nodiscard]] std::unique_ptr<Transport> connect_fastest(const PeerDiscoveryOptions& options,
+                                                            TcpEndpoint endpoint);
+};
+
+struct HYPERLINK_API PeerDiscoveryTestHarness {
+  std::vector<std::pair<std::string, std::string>> replies;
+  std::map<std::string, double> probe_rates;
+  std::map<std::string, std::string> probe_failures;
+  std::vector<std::string> probed_hosts;
+
+  [[nodiscard]] DiscoveredPeer select_fastest();
 };
 
 [[nodiscard]] HYPERLINK_API std::optional<DiscoveredPeer> parse_peer_advertisement_for_testing(

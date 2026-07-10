@@ -1,7 +1,9 @@
 #include "hyperlink/peer_discovery.hpp"
 
 #include <cassert>
+#include <map>
 #include <string>
+#include <vector>
 
 void parses_v2_response_and_uses_source_address() {
   const auto peer = hyperlink::parse_peer_advertisement_for_testing(
@@ -40,4 +42,28 @@ void chooses_highest_rate_then_stable_tie_breaker() {
       {{"192.168.1.4", 47790, 47791, 1}, "four-low-port", "192.168.1.4", 10.0}});
   assert(tie_winner.endpoint.host == "192.168.1.4");
   assert(tie_winner.endpoint.transfer_port == 47790);
+}
+
+void probes_every_deduplicated_candidate_and_chooses_fastest() {
+  auto harness = hyperlink::PeerDiscoveryTestHarness{};
+  harness.replies = {{"HLINK_PEER_V2 47790 47791 1 slow", "192.168.1.8"},
+                     {"HLINK_PEER_V2 47790 47791 1 slow", "192.168.1.8"},
+                     {"HLINK_PEER_V2 47790 47792 1 fast", "192.168.1.9"}};
+  harness.probe_rates = {{"192.168.1.8", 5.0}, {"192.168.1.9", 15.0}};
+
+  assert(harness.select_fastest().endpoint.host == "192.168.1.9");
+  assert((harness.probed_hosts == std::vector<std::string>{"192.168.1.8", "192.168.1.9"}));
+}
+
+void reports_all_failed_probes() {
+  auto harness = hyperlink::PeerDiscoveryTestHarness{};
+  harness.replies = {{"HLINK_PEER_V2 47790 47791 1 one", "192.168.1.8"}};
+  harness.probe_failures = {{"192.168.1.8", "connection refused"}};
+
+  try {
+    static_cast<void>(harness.select_fastest());
+    assert(false);
+  } catch (const hyperlink::PeerDiscoveryError& error) {
+    assert(std::string{error.what()}.find("connection refused") != std::string::npos);
+  }
 }

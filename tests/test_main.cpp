@@ -7,6 +7,8 @@ void send_requires_connected_session();
 void parses_v2_response_and_uses_source_address();
 void rejects_invalid_v2_response();
 void chooses_highest_rate_then_stable_tie_breaker();
+void probes_every_deduplicated_candidate_and_chooses_fastest();
+void reports_all_failed_probes();
 
 int main() {
   validation_rejects_bad_packet_size();
@@ -18,5 +20,7 @@ int main() {
   parses_v2_response_and_uses_source_address();
   rejects_invalid_v2_response();
   chooses_highest_rate_then_stable_tie_breaker();
+  probes_every_deduplicated_candidate_and_chooses_fastest();
+  reports_all_failed_probes();
   return 0;
 }

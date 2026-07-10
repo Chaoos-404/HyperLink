@@ -55,7 +55,7 @@ else()
 endif()
 
 if(WIN32)
-  target_link_libraries(hyperlink PRIVATE ws2_32)
+  target_link_libraries(hyperlink PRIVATE ws2_32 iphlpapi)
 endif()
 
 if(HYPERLINK_ENABLE_LIBUSB)
