@@ -20,6 +20,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 add_library(hyperlink
   src/auto_config.cpp
   src/network_transport.cpp
+  src/peer_discovery.cpp
   src/session.cpp
 )
 
@@ -96,6 +97,7 @@ if(HYPERLINK_BUILD_TESTS)
   enable_testing()
   add_executable(hyperlink_tests
     tests/auto_config_tests.cpp
+    tests/peer_discovery_tests.cpp
     tests/session_tests.cpp
     tests/test_main.cpp
   )
