@@ -11,11 +11,11 @@ Chaoos404.Hyperlink
 To test locally on Windows:
 
 ```powershell
-winget install --manifest .\packaging\winget\Manifests\c\Chaoos404\Hyperlink\0.1.1
+winget install --manifest .\packaging\winget\Manifests\c\Chaoos404\Hyperlink\0.1.7
 ```
 
 To publish publicly, submit these files to the `microsoft/winget-pkgs` repository under
-the same `Manifests/c/Chaoos404/Hyperlink/0.1.1/` path. After Microsoft accepts the PR,
+the same `Manifests/c/Chaoos404/Hyperlink/0.1.7/` path. After Microsoft accepts the PR,
 users can install with:
 
 ```powershell
