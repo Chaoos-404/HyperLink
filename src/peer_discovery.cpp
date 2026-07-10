@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cctype>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <utility>
 
@@ -424,6 +426,148 @@ template <typename ReplyProvider, typename Probe>
 }
 
 } // namespace
+
+class PeerDiscoveryResponder::Impl {
+public:
+  explicit Impl(PeerDiscoveryResponderOptions options) : options_(std::move(options)) {}
+
+  ~Impl() { stop(); }
+
+  void start() {
+    if (running_.exchange(true)) return;
+    try {
+      if (options_.transfer_port == 0 || options_.probe_port == 0 ||
+          options_.discovery_port == 0 || options_.parallel_streams == 0 ||
+          options_.display_name.empty()) {
+        throw PeerDiscoveryError("invalid peer discovery responder options");
+      }
+      ensure_socket_runtime();
+      auto discovery_socket = make_udp_socket();
+      auto probe_socket = make_probe_socket();
+      discovery_thread_ = std::thread{[this, socket = std::move(discovery_socket)]() mutable {
+        serve_discovery(std::move(socket));
+      }};
+      probe_thread_ = std::thread{[this, socket = std::move(probe_socket)]() mutable {
+        serve_probes(std::move(socket));
+      }};
+    } catch (...) {
+      stop();
+      throw;
+    }
+  }
+
+  void stop() {
+    running_ = false;
+    if (discovery_thread_.joinable()) discovery_thread_.join();
+    if (probe_thread_.joinable()) probe_thread_.join();
+  }
+
+private:
+  [[nodiscard]] SocketHandle make_udp_socket() const {
+    auto socket = SocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
+    if (!socket.valid()) throw PeerDiscoveryError("discovery responder socket failed: " + last_socket_error());
+    const auto enabled = 1;
+    setsockopt(socket.get(), SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&enabled), sizeof(enabled));
+    const auto endpoint = ipv4_endpoint(options_.bind_host, options_.discovery_port);
+    if (::bind(socket.get(), reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) != 0) {
+      throw PeerDiscoveryError("discovery responder bind failed: " + last_socket_error());
+    }
+    return socket;
+  }
+
+  [[nodiscard]] SocketHandle make_probe_socket() const {
+    auto socket = SocketHandle{::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
+    if (!socket.valid()) throw PeerDiscoveryError("probe responder socket failed: " + last_socket_error());
+    const auto enabled = 1;
+    setsockopt(socket.get(), SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&enabled), sizeof(enabled));
+    const auto endpoint = ipv4_endpoint(options_.bind_host, options_.probe_port);
+    if (::bind(socket.get(), reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) != 0 ||
+        ::listen(socket.get(), SOMAXCONN) != 0) {
+      throw PeerDiscoveryError("probe responder bind failed: " + last_socket_error());
+    }
+    set_nonblocking(socket.get());
+    return socket;
+  }
+
+  void serve_discovery(SocketHandle socket) {
+    const auto response = std::string{kAdvertisementPrefix} + std::to_string(options_.transfer_port) + " " +
+                          std::to_string(options_.probe_port) + " " +
+                          std::to_string(options_.parallel_streams) + " " + options_.display_name;
+    while (running_) {
+      fd_set readable;
+      FD_ZERO(&readable);
+      FD_SET(socket.get(), &readable);
+      auto timeout = timeval{.tv_sec = 0, .tv_usec = 100000};
+      if (select(static_cast<int>(socket.get() + 1), &readable, nullptr, nullptr, &timeout) <= 0 ||
+          !FD_ISSET(socket.get(), &readable)) continue;
+      std::array<char, kMaximumAdvertisementBytes> buffer{};
+      sockaddr_in source{};
+      SocketLength source_length = sizeof(source);
+      const auto received = recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size()), 0,
+                                     reinterpret_cast<sockaddr*>(&source), &source_length);
+      if (received <= 0 || std::string_view{buffer.data(), static_cast<std::size_t>(received)} != kDiscoveryMessage) continue;
+      sendto(socket.get(), response.data(), static_cast<int>(response.size()), 0,
+             reinterpret_cast<const sockaddr*>(&source), source_length);
+    }
+  }
+
+  void serve_probes(SocketHandle socket) {
+    while (running_) {
+      fd_set readable;
+      FD_ZERO(&readable);
+      FD_SET(socket.get(), &readable);
+      auto timeout = timeval{.tv_sec = 0, .tv_usec = 100000};
+      if (select(static_cast<int>(socket.get() + 1), &readable, nullptr, nullptr, &timeout) <= 0 ||
+          !FD_ISSET(socket.get(), &readable)) continue;
+      sockaddr_in source{};
+      SocketLength source_length = sizeof(source);
+      auto client = SocketHandle{accept(socket.get(), reinterpret_cast<sockaddr*>(&source), &source_length)};
+      if (client.valid()) serve_probe_client(client.get());
+    }
+  }
+
+  void serve_probe_client(NativeSocket client) const {
+    set_nonblocking(client);
+    static const auto buffer = std::array<std::byte, 64 * 1024>{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+    while (std::chrono::steady_clock::now() < deadline) {
+      try {
+        wait_for_socket(client, true, deadline);
+      } catch (...) {
+        return;
+      }
+      const auto sent = send(client, reinterpret_cast<const char*>(buffer.data()),
+                             static_cast<int>(buffer.size()),
+#if defined(_WIN32)
+                             0
+#else
+                             MSG_NOSIGNAL
+#endif
+      );
+      if (sent > 0) continue;
+      if (sent == 0) return;
+#if defined(_WIN32)
+      if (WSAGetLastError() == WSAEWOULDBLOCK) continue;
+#else
+      if (errno == EWOULDBLOCK || errno == EAGAIN) continue;
+#endif
+      return;
+    }
+  }
+
+  PeerDiscoveryResponderOptions options_;
+  std::atomic_bool running_{false};
+  std::thread discovery_thread_;
+  std::thread probe_thread_;
+};
+
+PeerDiscoveryResponder::PeerDiscoveryResponder(PeerDiscoveryResponderOptions options)
+    : impl_(std::make_unique<Impl>(std::move(options))) {}
+PeerDiscoveryResponder::~PeerDiscoveryResponder() = default;
+PeerDiscoveryResponder::PeerDiscoveryResponder(PeerDiscoveryResponder&&) noexcept = default;
+auto PeerDiscoveryResponder::operator=(PeerDiscoveryResponder&&) noexcept -> PeerDiscoveryResponder& = default;
+void PeerDiscoveryResponder::start() { impl_->start(); }
+void PeerDiscoveryResponder::stop() { impl_->stop(); }
 
 std::optional<DiscoveredPeer> parse_peer_advertisement_for_testing(std::string_view message,
                                                                     std::string_view source_address) {

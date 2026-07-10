@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,15 @@ struct HYPERLINK_API PeerDiscoveryOptions {
   std::uint32_t probe_payload_bytes{256 * 1024};
 };
 
+struct HYPERLINK_API PeerDiscoveryResponderOptions {
+  std::string bind_host{"0.0.0.0"};
+  std::uint16_t transfer_port{47790};
+  std::uint16_t probe_port{47791};
+  std::uint16_t discovery_port{47789};
+  std::uint32_t parallel_streams{1};
+  std::string display_name{"hyperlink-peer"};
+};
+
 class HYPERLINK_API PeerDiscoveryError : public std::runtime_error {
 public:
   using std::runtime_error::runtime_error;
@@ -45,6 +55,23 @@ public:
   [[nodiscard]] DiscoveredPeer select_fastest(const PeerDiscoveryOptions& options);
   [[nodiscard]] std::unique_ptr<Transport> connect_fastest(const PeerDiscoveryOptions& options,
                                                             TcpEndpoint endpoint);
+};
+
+class HYPERLINK_API PeerDiscoveryResponder {
+public:
+  explicit PeerDiscoveryResponder(PeerDiscoveryResponderOptions options);
+  ~PeerDiscoveryResponder();
+  PeerDiscoveryResponder(const PeerDiscoveryResponder&) = delete;
+  auto operator=(const PeerDiscoveryResponder&) -> PeerDiscoveryResponder& = delete;
+  PeerDiscoveryResponder(PeerDiscoveryResponder&&) noexcept;
+  auto operator=(PeerDiscoveryResponder&&) noexcept -> PeerDiscoveryResponder&;
+
+  void start();
+  void stop();
+
+private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 [[nodiscard]] HYPERLINK_API std::optional<DiscoveredPeer> parse_peer_advertisement_for_testing(

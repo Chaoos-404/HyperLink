@@ -12,6 +12,7 @@ void reports_all_failed_probes();
 void probes_same_host_at_each_distinct_probe_port();
 void continues_after_a_timed_out_probe();
 void selected_connection_retains_caller_buffer_settings();
+void loopback_responder_is_discovered_and_has_positive_throughput();
 
 int main() {
   validation_rejects_bad_packet_size();
@@ -28,5 +29,6 @@ int main() {
   probes_same_host_at_each_distinct_probe_port();
   continues_after_a_timed_out_probe();
   selected_connection_retains_caller_buffer_settings();
+  loopback_responder_is_discovered_and_has_positive_throughput();
   return 0;
 }

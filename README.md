@@ -200,17 +200,18 @@ On the receiving computer:
 hyperlink receive
 ```
 
-Receivers advertise themselves on UDP port `47789` by default. On the sending computer,
-let Hyperlink discover the receiver and copy the receiver's transfer settings:
+Receivers answer discovery requests on UDP port `47789` by default and provide a TCP
+throughput probe on port `47791`. On the sending computer, let Hyperlink discover local
+receivers, measure each responder's TCP probe throughput, and use the fastest peer's
+transfer settings:
 
 ```sh
 hyperlink send /path/to/file-or-directory
 ```
 
-Auto-discovery probes each local IPv4 interface, prefers cable-side `169.254.x.x`
-receiver addresses, and refuses Wi-Fi/LAN fallback by default. If it cannot find a
-cable-side receiver address, it stops and prints the addresses it found. Use `--allow-lan`
-only when you intentionally want to transfer over Wi-Fi or Ethernet LAN.
+Auto-discovery broadcasts on every local IPv4 subnet, including USB, Wi-Fi, Ethernet,
+and loopback interfaces. It ranks valid responders by measured TCP probe throughput;
+there is no address-class preference.
 
 You can still target a known address manually:
 
@@ -283,6 +284,7 @@ Allow the benchmark and file-transfer ports through Windows Firewall:
 ```powershell
 New-NetFirewallRule -DisplayName "Hyperlink Bench" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47777-47797
 New-NetFirewallRule -DisplayName "Hyperlink File" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47790-47797
+New-NetFirewallRule -DisplayName "Hyperlink Probe" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47791
 New-NetFirewallRule -DisplayName "Hyperlink Discovery" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 47789
 ```
 

@@ -1,8 +1,21 @@
 #include "../src/peer_discovery_internal.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <string>
 #include <vector>
+
+void loopback_responder_is_discovered_and_has_positive_throughput() {
+  auto responder = hyperlink::PeerDiscoveryResponder{
+      {.bind_host = "127.0.0.1", .transfer_port = 47790, .probe_port = 47791,
+       .discovery_port = 47789, .display_name = "loopback"}};
+  responder.start();
+  const auto peer = hyperlink::PeerDiscovery{}.select_fastest(
+      {.discovery_port = 47789, .discovery_timeout = std::chrono::milliseconds{500},
+       .probe_timeout = std::chrono::milliseconds{250}});
+  responder.stop();
+  assert(peer.endpoint.host == "127.0.0.1" && peer.measured_bytes_per_second > 0.0);
+}
 
 void parses_v2_response_and_uses_source_address() {
   const auto peer = hyperlink::parse_peer_advertisement_for_testing(
