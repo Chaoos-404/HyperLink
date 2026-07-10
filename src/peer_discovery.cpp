@@ -441,6 +441,28 @@ public:
           options_.display_name.empty()) {
         throw PeerDiscoveryError("invalid peer discovery responder options");
       }
+      const auto last_transfer_port = static_cast<std::uint32_t>(options_.transfer_port) +
+                                      options_.parallel_streams - 1U;
+      if (last_transfer_port > 65535U) {
+        throw PeerDiscoveryError("transfer port plus parallel stream count exceeds 65535");
+      }
+      selected_probe_port_ = options_.probe_port;
+      if (selected_probe_port_ >= options_.transfer_port &&
+          selected_probe_port_ <= last_transfer_port) {
+        if (last_transfer_port < 65535U) {
+          selected_probe_port_ = static_cast<std::uint16_t>(last_transfer_port + 1U);
+        } else if (options_.transfer_port > 1) {
+          selected_probe_port_ = static_cast<std::uint16_t>(options_.transfer_port - 1U);
+        } else {
+          throw PeerDiscoveryError("no probe port is available outside the transfer stream range");
+        }
+      }
+      advertisement_ = std::string{kAdvertisementPrefix} + std::to_string(options_.transfer_port) +
+                       " " + std::to_string(selected_probe_port_) + " " +
+                       std::to_string(options_.parallel_streams) + " " + options_.display_name;
+      if (advertisement_.size() > kMaximumAdvertisementBytes) {
+        throw PeerDiscoveryError("peer discovery advertisement exceeds 512 bytes");
+      }
       ensure_socket_runtime();
       auto discovery_socket = make_udp_socket();
       auto probe_socket = make_probe_socket();
@@ -480,7 +502,7 @@ private:
     if (!socket.valid()) throw PeerDiscoveryError("probe responder socket failed: " + last_socket_error());
     const auto enabled = 1;
     setsockopt(socket.get(), SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&enabled), sizeof(enabled));
-    const auto endpoint = ipv4_endpoint(options_.bind_host, options_.probe_port);
+    const auto endpoint = ipv4_endpoint(options_.bind_host, selected_probe_port_);
     if (::bind(socket.get(), reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) != 0 ||
         ::listen(socket.get(), SOMAXCONN) != 0) {
       throw PeerDiscoveryError("probe responder bind failed: " + last_socket_error());
@@ -490,9 +512,6 @@ private:
   }
 
   void serve_discovery(SocketHandle socket) {
-    const auto response = std::string{kAdvertisementPrefix} + std::to_string(options_.transfer_port) + " " +
-                          std::to_string(options_.probe_port) + " " +
-                          std::to_string(options_.parallel_streams) + " " + options_.display_name;
     while (running_) {
       fd_set readable;
       FD_ZERO(&readable);
@@ -506,7 +525,7 @@ private:
       const auto received = recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size()), 0,
                                      reinterpret_cast<sockaddr*>(&source), &source_length);
       if (received <= 0 || std::string_view{buffer.data(), static_cast<std::size_t>(received)} != kDiscoveryMessage) continue;
-      sendto(socket.get(), response.data(), static_cast<int>(response.size()), 0,
+      sendto(socket.get(), advertisement_.data(), static_cast<int>(advertisement_.size()), 0,
              reinterpret_cast<const sockaddr*>(&source), source_length);
     }
   }
@@ -556,6 +575,8 @@ private:
   }
 
   PeerDiscoveryResponderOptions options_;
+  std::uint16_t selected_probe_port_{0};
+  std::string advertisement_;
   std::atomic_bool running_{false};
   std::thread discovery_thread_;
   std::thread probe_thread_;

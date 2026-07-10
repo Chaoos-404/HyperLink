@@ -13,6 +13,9 @@ void probes_same_host_at_each_distinct_probe_port();
 void continues_after_a_timed_out_probe();
 void selected_connection_retains_caller_buffer_settings();
 void loopback_responder_is_discovered_and_has_positive_throughput();
+void responder_derives_probe_port_outside_transfer_stream_range();
+void responder_rejects_oversized_v2_advertisement_before_starting();
+void responder_opens_listeners_only_while_started_and_releases_them_on_stop();
 
 int main() {
   validation_rejects_bad_packet_size();
@@ -30,5 +33,8 @@ int main() {
   continues_after_a_timed_out_probe();
   selected_connection_retains_caller_buffer_settings();
   loopback_responder_is_discovered_and_has_positive_throughput();
+  responder_derives_probe_port_outside_transfer_stream_range();
+  responder_rejects_oversized_v2_advertisement_before_starting();
+  responder_opens_listeners_only_while_started_and_releases_them_on_stop();
   return 0;
 }

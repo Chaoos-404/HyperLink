@@ -17,6 +17,49 @@ void loopback_responder_is_discovered_and_has_positive_throughput() {
   assert(peer.endpoint.host == "127.0.0.1" && peer.measured_bytes_per_second > 0.0);
 }
 
+void responder_derives_probe_port_outside_transfer_stream_range() {
+  auto responder = hyperlink::PeerDiscoveryResponder{
+      {.bind_host = "127.0.0.1", .transfer_port = 47810, .probe_port = 47811,
+       .discovery_port = 47809, .parallel_streams = 8, .display_name = "parallel"}};
+  responder.start();
+  const auto peer = hyperlink::PeerDiscovery{}.select_fastest(
+      {.discovery_port = 47809, .discovery_timeout = std::chrono::milliseconds{500},
+       .probe_timeout = std::chrono::milliseconds{250}});
+  responder.stop();
+  assert(peer.endpoint.probe_port == 47818);
+}
+
+void responder_rejects_oversized_v2_advertisement_before_starting() {
+  auto responder = hyperlink::PeerDiscoveryResponder{
+      {.bind_host = "127.0.0.1", .transfer_port = 47820, .probe_port = 47821,
+       .discovery_port = 47819, .display_name = std::string(485, 'a')}};
+  try {
+    responder.start();
+    assert(false);
+  } catch (const hyperlink::PeerDiscoveryError&) {
+  }
+
+  auto replacement = hyperlink::PeerDiscoveryResponder{
+      {.bind_host = "127.0.0.1", .transfer_port = 47820, .probe_port = 47821,
+       .discovery_port = 47819, .display_name = "replacement"}};
+  replacement.start();
+  replacement.stop();
+}
+
+void responder_opens_listeners_only_while_started_and_releases_them_on_stop() {
+  const auto options = hyperlink::PeerDiscoveryResponderOptions{
+      .bind_host = "127.0.0.1", .transfer_port = 47830, .probe_port = 47831,
+      .discovery_port = 47829, .display_name = "lifecycle"};
+  auto inactive = hyperlink::PeerDiscoveryResponder{options};
+  auto active = hyperlink::PeerDiscoveryResponder{options};
+  active.start();
+  active.stop();
+
+  auto replacement = hyperlink::PeerDiscoveryResponder{options};
+  replacement.start();
+  replacement.stop();
+}
+
 void parses_v2_response_and_uses_source_address() {
   const auto peer = hyperlink::parse_peer_advertisement_for_testing(
       "HLINK_PEER_V2 47790 47791 8 receiver", "169.254.10.2");

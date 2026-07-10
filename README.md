@@ -201,9 +201,10 @@ hyperlink receive
 ```
 
 Receivers answer discovery requests on UDP port `47789` by default and provide a TCP
-throughput probe on port `47791`. On the sending computer, let Hyperlink discover local
-receivers, measure each responder's TCP probe throughput, and use the fastest peer's
-transfer settings:
+throughput probe. The responder moves a requested probe port out of its transfer stream
+range; the default `47790` receiver with eight streams therefore advertises probe port
+`47798`. On the sending computer, let Hyperlink discover local receivers, measure each
+responder's TCP probe throughput, and use the fastest peer's transfer settings:
 
 ```sh
 hyperlink send /path/to/file-or-directory
@@ -283,8 +284,7 @@ Allow the benchmark and file-transfer ports through Windows Firewall:
 
 ```powershell
 New-NetFirewallRule -DisplayName "Hyperlink Bench" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47777-47797
-New-NetFirewallRule -DisplayName "Hyperlink File" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47790-47797
-New-NetFirewallRule -DisplayName "Hyperlink Probe" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47791
+New-NetFirewallRule -DisplayName "Hyperlink File" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47790-47798
 New-NetFirewallRule -DisplayName "Hyperlink Discovery" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 47789
 ```
 
