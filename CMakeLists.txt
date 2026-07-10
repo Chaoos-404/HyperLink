@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
   Hyperlink
-  VERSION 0.1.6
+  VERSION 0.1.3
   DESCRIPTION "C++ library for high-speed peer-to-peer data transfer over USB links"
   LANGUAGES CXX)
 
@@ -83,9 +83,6 @@ if(HYPERLINK_BUILD_EXAMPLES)
 
   add_executable(hyperlink_file examples/file_transfer.cpp)
   target_link_libraries(hyperlink_file PRIVATE Hyperlink::hyperlink)
-  if(WIN32)
-    target_link_libraries(hyperlink_file PRIVATE iphlpapi)
-  endif()
 
   add_executable(hyperlink_cli examples/cli.cpp)
   set_target_properties(hyperlink_cli PROPERTIES OUTPUT_NAME hyperlink)
