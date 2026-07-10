@@ -14,7 +14,7 @@ struct ProbeEndpointKey {
   auto operator<=>(const ProbeEndpointKey&) const = default;
 };
 
-struct HYPERLINK_API PeerDiscoveryTestHarness {
+struct PeerDiscoveryTestHarness {
   std::vector<std::pair<std::string, std::string>> replies;
   std::map<ProbeEndpointKey, double> probe_rates;
   std::map<ProbeEndpointKey, std::string> probe_failures;
@@ -23,7 +23,7 @@ struct HYPERLINK_API PeerDiscoveryTestHarness {
   [[nodiscard]] DiscoveredPeer select_fastest();
 };
 
-[[nodiscard]] HYPERLINK_API TcpEndpoint
+[[nodiscard]] TcpEndpoint
 selected_tcp_endpoint_for_testing(TcpEndpoint endpoint, const DiscoveredPeer& peer);
 
 } // namespace hyperlink::detail
