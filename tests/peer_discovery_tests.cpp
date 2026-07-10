@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,18 @@ void responder_opens_listeners_only_while_started_and_releases_them_on_stop() {
   auto replacement = hyperlink::PeerDiscoveryResponder{options};
   replacement.start();
   replacement.stop();
+}
+
+void responder_rejects_transfer_port_range_that_overflows_uint32() {
+  auto responder = hyperlink::PeerDiscoveryResponder{
+      {.bind_host = "127.0.0.1", .transfer_port = 2, .probe_port = 47851,
+       .discovery_port = 47849, .parallel_streams = std::numeric_limits<std::uint32_t>::max(),
+       .display_name = "overflow"}};
+  try {
+    responder.start();
+    assert(false);
+  } catch (const hyperlink::PeerDiscoveryError&) {
+  }
 }
 
 void parses_v2_response_and_uses_source_address() {

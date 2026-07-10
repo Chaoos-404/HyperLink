@@ -441,8 +441,8 @@ public:
           options_.display_name.empty()) {
         throw PeerDiscoveryError("invalid peer discovery responder options");
       }
-      const auto last_transfer_port = static_cast<std::uint32_t>(options_.transfer_port) +
-                                      options_.parallel_streams - 1U;
+      const auto last_transfer_port = static_cast<std::uint64_t>(options_.transfer_port) +
+                                      static_cast<std::uint64_t>(options_.parallel_streams) - 1ULL;
       if (last_transfer_port > 65535U) {
         throw PeerDiscoveryError("transfer port plus parallel stream count exceeds 65535");
       }

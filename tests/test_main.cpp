@@ -16,6 +16,7 @@ void loopback_responder_is_discovered_and_has_positive_throughput();
 void responder_derives_probe_port_outside_transfer_stream_range();
 void responder_rejects_oversized_v2_advertisement_before_starting();
 void responder_opens_listeners_only_while_started_and_releases_them_on_stop();
+void responder_rejects_transfer_port_range_that_overflows_uint32();
 
 int main() {
   validation_rejects_bad_packet_size();
@@ -36,5 +37,6 @@ int main() {
   responder_derives_probe_port_outside_transfer_stream_range();
   responder_rejects_oversized_v2_advertisement_before_starting();
   responder_opens_listeners_only_while_started_and_releases_them_on_stop();
+  responder_rejects_transfer_port_range_that_overflows_uint32();
   return 0;
 }

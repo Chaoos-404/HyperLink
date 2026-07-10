@@ -134,7 +134,9 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("--auto is only valid with --send");
   }
 
-  if (static_cast<std::uint32_t>(options.port) + options.parallel - 1U > 65535U) {
+  if (static_cast<std::uint64_t>(options.port) +
+          static_cast<std::uint64_t>(options.parallel) - 1ULL >
+      65535ULL) {
     throw std::invalid_argument("port plus parallel stream count exceeds 65535");
   }
 
@@ -567,8 +569,9 @@ int run_send(const Options& options) {
     effective_options.host = receiver.endpoint.host;
     effective_options.port = receiver.endpoint.transfer_port;
     effective_options.parallel = receiver.endpoint.parallel_streams;
-    if (static_cast<std::uint32_t>(effective_options.port) + effective_options.parallel - 1U >
-        65535U) {
+    if (static_cast<std::uint64_t>(effective_options.port) +
+            static_cast<std::uint64_t>(effective_options.parallel) - 1ULL >
+        65535ULL) {
       throw std::runtime_error("discovered peer port plus parallel stream count exceeds 65535");
     }
     std::cout << "Discovered " << receiver.display_name << " at " << effective_options.host << ":"
