@@ -4,6 +4,21 @@ void negotiation_throws_on_invalid_input();
 void session_requires_transport();
 void session_discovers_and_transfers_after_connect();
 void send_requires_connected_session();
+void parses_v2_response_and_uses_source_address();
+void rejects_invalid_v2_response();
+void chooses_highest_rate_then_stable_tie_breaker();
+void probes_every_deduplicated_candidate_and_chooses_fastest();
+void reports_all_failed_probes();
+void probes_same_host_at_each_distinct_probe_port();
+void continues_after_a_timed_out_probe();
+void selected_connection_retains_caller_buffer_settings();
+void loopback_responder_is_discovered_and_has_positive_throughput();
+void responder_derives_probe_port_outside_transfer_stream_range();
+void responder_rejects_oversized_v2_advertisement_before_starting();
+void responder_opens_listeners_only_while_started_and_releases_them_on_stop();
+void responder_rejects_transfer_port_range_that_overflows_uint32();
+void rejects_oversized_datagram_even_when_its_prefix_is_valid();
+void stalled_probe_client_does_not_block_a_second_probe();
 
 int main() {
   validation_rejects_bad_packet_size();
@@ -12,5 +27,20 @@ int main() {
   session_requires_transport();
   session_discovers_and_transfers_after_connect();
   send_requires_connected_session();
+  parses_v2_response_and_uses_source_address();
+  rejects_invalid_v2_response();
+  chooses_highest_rate_then_stable_tie_breaker();
+  probes_every_deduplicated_candidate_and_chooses_fastest();
+  reports_all_failed_probes();
+  probes_same_host_at_each_distinct_probe_port();
+  continues_after_a_timed_out_probe();
+  selected_connection_retains_caller_buffer_settings();
+  loopback_responder_is_discovered_and_has_positive_throughput();
+  responder_derives_probe_port_outside_transfer_stream_range();
+  responder_rejects_oversized_v2_advertisement_before_starting();
+  responder_opens_listeners_only_while_started_and_releases_them_on_stop();
+  responder_rejects_transfer_port_range_that_overflows_uint32();
+  rejects_oversized_datagram_even_when_its_prefix_is_valid();
+  stalled_probe_client_does_not_block_a_second_probe();
   return 0;
 }

@@ -1,9 +1,9 @@
 #include "hyperlink/network_transport.hpp"
+#include "hyperlink/peer_discovery.hpp"
 #include "hyperlink/session.hpp"
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -23,24 +23,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
-#else
-#include <arpa/inet.h>
-#include <cerrno>
-#include <cstring>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 
 namespace {
 
@@ -65,7 +47,6 @@ struct Options {
   bool send{false};
   bool receive{false};
   bool auto_discover{false};
-  bool allow_lan{false};
   bool advertise{true};
   std::string host{"0.0.0.0"};
   std::uint16_t port{kDefaultPort};
@@ -83,7 +64,7 @@ void print_usage() {
             << "  hyperlink_file --send --host <peer-ip> --file <path> [--port 47790] "
                "[--name <remote-name>] [--parallel 1]\n"
             << "  hyperlink_file --send --auto --file <path> [--name <remote-name>] "
-               "[--allow-lan]\n";
+               "[--discovery-port 47789]\n";
 }
 
 std::uint16_t parse_port(const std::string& value) {
@@ -115,8 +96,6 @@ Options parse_args(int argc, char** argv) {
     } else if (arg == "--auto") {
       options.auto_discover = true;
       options.host.clear();
-    } else if (arg == "--allow-lan") {
-      options.allow_lan = true;
     } else if (arg == "--no-advertise") {
       options.advertise = false;
     } else if (arg == "--host") {
@@ -155,535 +134,14 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("--auto is only valid with --send");
   }
 
-  if (static_cast<std::uint32_t>(options.port) + options.parallel - 1U > 65535U) {
+  if (static_cast<std::uint64_t>(options.port) +
+          static_cast<std::uint64_t>(options.parallel) - 1ULL >
+      65535ULL) {
     throw std::invalid_argument("port plus parallel stream count exceeds 65535");
   }
 
   return options;
 }
-
-#if defined(_WIN32)
-using UdpSocket = SOCKET;
-constexpr UdpSocket kInvalidUdpSocket = INVALID_SOCKET;
-
-class SocketRuntime {
-public:
-  SocketRuntime() {
-    auto data = WSADATA{};
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
-      throw std::runtime_error("WSAStartup failed");
-    }
-  }
-
-  ~SocketRuntime() { WSACleanup(); }
-};
-
-void ensure_socket_runtime() {
-  static const SocketRuntime runtime;
-  (void)runtime;
-}
-
-void close_udp_socket(UdpSocket socket) {
-  if (socket != kInvalidUdpSocket) {
-    closesocket(socket);
-  }
-}
-
-std::string socket_error() { return "Winsock error " + std::to_string(WSAGetLastError()); }
-#else
-using UdpSocket = int;
-constexpr UdpSocket kInvalidUdpSocket = -1;
-
-void ensure_socket_runtime() {}
-
-void close_udp_socket(UdpSocket socket) {
-  if (socket != kInvalidUdpSocket) {
-    close(socket);
-  }
-}
-
-std::string socket_error() { return std::strerror(errno); }
-#endif
-
-class UdpSocketHandle {
-public:
-  UdpSocketHandle() = default;
-  explicit UdpSocketHandle(UdpSocket socket) : socket_(socket) {}
-  ~UdpSocketHandle() { reset(); }
-
-  UdpSocketHandle(const UdpSocketHandle&) = delete;
-  auto operator=(const UdpSocketHandle&) -> UdpSocketHandle& = delete;
-
-  UdpSocketHandle(UdpSocketHandle&& other) noexcept
-      : socket_(std::exchange(other.socket_, kInvalidUdpSocket)) {}
-
-  auto operator=(UdpSocketHandle&& other) noexcept -> UdpSocketHandle& {
-    if (this != &other) {
-      reset();
-      socket_ = std::exchange(other.socket_, kInvalidUdpSocket);
-    }
-    return *this;
-  }
-
-  [[nodiscard]] UdpSocket get() const { return socket_; }
-  [[nodiscard]] bool valid() const { return socket_ != kInvalidUdpSocket; }
-
-  void reset(UdpSocket socket = kInvalidUdpSocket) {
-    if (socket_ != kInvalidUdpSocket) {
-      close_udp_socket(socket_);
-    }
-    socket_ = socket;
-  }
-
-private:
-  UdpSocket socket_{kInvalidUdpSocket};
-};
-
-void set_socket_timeout(UdpSocket socket, std::chrono::milliseconds timeout) {
-#if defined(_WIN32)
-  const auto value = static_cast<DWORD>(timeout.count());
-  setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&value), sizeof(value));
-#else
-  auto value = timeval{
-      .tv_sec = static_cast<time_t>(timeout.count() / 1000),
-      .tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000),
-  };
-  setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value));
-#endif
-}
-
-void set_reuse_address(UdpSocket socket) {
-  const auto enabled = 1;
-  setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&enabled),
-             sizeof(enabled));
-}
-
-void set_broadcast(UdpSocket socket) {
-  const auto enabled = 1;
-  setsockopt(socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&enabled),
-             sizeof(enabled));
-}
-
-sockaddr_in make_ipv4_address(const std::string& host, std::uint16_t port) {
-  auto address = sockaddr_in{};
-  address.sin_family = AF_INET;
-  address.sin_port = htons(port);
-  if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
-    throw std::runtime_error("invalid IPv4 address: " + host);
-  }
-  return address;
-}
-
-std::string ipv4_to_string(const sockaddr_in& address) {
-  auto buffer = std::array<char, INET_ADDRSTRLEN>{};
-  const auto* result = inet_ntop(AF_INET, &address.sin_addr, buffer.data(), buffer.size());
-  if (result == nullptr) {
-    return {};
-  }
-  return buffer.data();
-}
-
-struct DiscoveredReceiver {
-  std::string host;
-  std::uint16_t port{kDefaultPort};
-  std::uint32_t parallel{1};
-  std::string name;
-};
-
-struct DiscoveryTarget {
-  std::string bind_host;
-  std::string destination_host;
-};
-
-struct ActiveDiscoverySocket {
-  UdpSocketHandle socket;
-  std::string bind_host;
-};
-
-int discovery_preference(const std::string& host) {
-  auto octets = std::array<int, 4>{};
-  if (std::sscanf(host.c_str(), "%d.%d.%d.%d", &octets[0], &octets[1], &octets[2],
-                  &octets[3]) != 4) {
-    return 1000;
-  }
-
-  if (octets[0] == 169 && octets[1] == 254) {
-    return 0;
-  }
-  if (octets[0] == 10) {
-    return 100;
-  }
-  if (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) {
-    return 110;
-  }
-  if (octets[0] == 192 && octets[1] == 168) {
-    return 120;
-  }
-  if (octets[0] == 127) {
-    return 900;
-  }
-  return 200;
-}
-
-std::string local_receiver_name() {
-  auto buffer = std::array<char, 256>{};
-  if (gethostname(buffer.data(), static_cast<int>(buffer.size() - 1)) == 0) {
-    return buffer.data();
-  }
-  return "hyperlink-receiver";
-}
-
-std::optional<DiscoveredReceiver> parse_discovery_response(std::string_view message,
-                                                           const std::string& source_host) {
-  auto stream = std::istringstream{std::string{message}};
-  auto magic = std::string{};
-  auto port = std::uint32_t{0};
-  auto parallel = std::uint32_t{0};
-  auto name = std::string{};
-  stream >> magic >> port >> parallel >> name;
-  if (magic != "HLINK_FILE_V1" || port == 0 || port > 65535 || parallel == 0) {
-    return std::nullopt;
-  }
-  return DiscoveredReceiver{
-      .host = source_host,
-      .port = static_cast<std::uint16_t>(port),
-      .parallel = parallel,
-      .name = name.empty() ? source_host : name,
-  };
-}
-
-bool is_link_local_ipv4(const std::string& host) { return discovery_preference(host) == 0; }
-
-std::string candidate_hosts(const std::vector<DiscoveredReceiver>& candidates) {
-  auto hosts = std::string{};
-  for (const auto& candidate : candidates) {
-    if (!hosts.empty()) {
-      hosts += ", ";
-    }
-    hosts += candidate.host;
-  }
-  return hosts.empty() ? "none" : hosts;
-}
-
-std::string ipv4_from_host_order(std::uint32_t address) {
-  auto socket_address = sockaddr_in{};
-  socket_address.sin_family = AF_INET;
-  socket_address.sin_addr.s_addr = htonl(address);
-  return ipv4_to_string(socket_address);
-}
-
-std::uint32_t ipv4_to_host_order(const sockaddr_in& address) {
-  return ntohl(address.sin_addr.s_addr);
-}
-
-std::uint32_t prefix_mask(std::uint32_t prefix_length) {
-  if (prefix_length == 0) {
-    return 0;
-  }
-  if (prefix_length >= 32) {
-    return 0xFFFFFFFFU;
-  }
-  return 0xFFFFFFFFU << (32U - prefix_length);
-}
-
-void add_discovery_target(std::vector<DiscoveryTarget>& targets, std::string bind_host,
-                          std::string destination_host) {
-  if (bind_host.empty() || destination_host.empty()) {
-    return;
-  }
-  const auto duplicate = std::any_of(targets.begin(), targets.end(), [&](const auto& target) {
-    return target.bind_host == bind_host && target.destination_host == destination_host;
-  });
-  if (!duplicate) {
-    targets.push_back(DiscoveryTarget{
-        .bind_host = std::move(bind_host),
-        .destination_host = std::move(destination_host),
-    });
-  }
-}
-
-#if defined(_WIN32)
-std::vector<DiscoveryTarget> interface_discovery_targets() {
-  auto targets = std::vector<DiscoveryTarget>{};
-  auto buffer_size = ULONG{15 * 1024};
-  auto buffer = std::vector<unsigned char>(buffer_size);
-  auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-  auto flags = ULONG{GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER};
-  auto result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &buffer_size);
-  if (result == ERROR_BUFFER_OVERFLOW) {
-    buffer.resize(buffer_size);
-    adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-    result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &buffer_size);
-  }
-  if (result != NO_ERROR) {
-    return targets;
-  }
-
-  for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
-    if (adapter->OperStatus != IfOperStatusUp) {
-      continue;
-    }
-    for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr;
-         unicast = unicast->Next) {
-      if (unicast->Address.lpSockaddr == nullptr ||
-          unicast->Address.lpSockaddr->sa_family != AF_INET) {
-        continue;
-      }
-      const auto* address =
-          reinterpret_cast<const sockaddr_in*>(unicast->Address.lpSockaddr);
-      const auto host = ipv4_to_string(*address);
-      const auto local = ipv4_to_host_order(*address);
-      const auto mask = prefix_mask(unicast->OnLinkPrefixLength);
-      const auto broadcast = (local & mask) | (~mask);
-      add_discovery_target(targets, host, ipv4_from_host_order(broadcast));
-      add_discovery_target(targets, host, "255.255.255.255");
-    }
-  }
-  return targets;
-}
-#else
-std::vector<DiscoveryTarget> interface_discovery_targets() {
-  auto targets = std::vector<DiscoveryTarget>{};
-  auto* interfaces = static_cast<ifaddrs*>(nullptr);
-  if (getifaddrs(&interfaces) != 0) {
-    return targets;
-  }
-
-  for (auto* interface = interfaces; interface != nullptr; interface = interface->ifa_next) {
-    if (interface->ifa_addr == nullptr || interface->ifa_addr->sa_family != AF_INET) {
-      continue;
-    }
-    if ((interface->ifa_flags & IFF_UP) == 0) {
-      continue;
-    }
-
-    const auto* address = reinterpret_cast<const sockaddr_in*>(interface->ifa_addr);
-    const auto bind_host = ipv4_to_string(*address);
-    if (interface->ifa_broadaddr != nullptr && (interface->ifa_flags & IFF_BROADCAST) != 0) {
-      const auto* broadcast = reinterpret_cast<const sockaddr_in*>(interface->ifa_broadaddr);
-      add_discovery_target(targets, bind_host, ipv4_to_string(*broadcast));
-    } else if (interface->ifa_netmask != nullptr) {
-      const auto* netmask = reinterpret_cast<const sockaddr_in*>(interface->ifa_netmask);
-      const auto broadcast =
-          (ipv4_to_host_order(*address) & ipv4_to_host_order(*netmask)) |
-          (~ipv4_to_host_order(*netmask));
-      add_discovery_target(targets, bind_host, ipv4_from_host_order(broadcast));
-    }
-    add_discovery_target(targets, bind_host, "255.255.255.255");
-  }
-
-  freeifaddrs(interfaces);
-  return targets;
-}
-#endif
-
-std::vector<ActiveDiscoverySocket> open_discovery_sockets(
-    const std::vector<DiscoveryTarget>& targets, std::uint16_t discovery_port,
-    std::string_view request) {
-  auto sockets = std::vector<ActiveDiscoverySocket>{};
-  for (const auto& target : targets) {
-    auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
-    if (!socket.valid()) {
-      continue;
-    }
-    set_broadcast(socket.get());
-    set_socket_timeout(socket.get(), std::chrono::milliseconds{100});
-
-    auto bind_address = make_ipv4_address(target.bind_host, 0);
-    if (bind(socket.get(), reinterpret_cast<const sockaddr*>(&bind_address),
-             sizeof(bind_address)) != 0) {
-      continue;
-    }
-
-    const auto destination = make_ipv4_address(target.destination_host, discovery_port);
-    static_cast<void>(sendto(socket.get(), request.data(), static_cast<int>(request.size()), 0,
-                             reinterpret_cast<const sockaddr*>(&destination),
-                             sizeof(destination)));
-    sockets.push_back(ActiveDiscoverySocket{
-        .socket = std::move(socket),
-        .bind_host = target.bind_host,
-    });
-  }
-  return sockets;
-}
-
-void collect_discovery_responses(UdpSocket socket, std::vector<DiscoveredReceiver>& candidates) {
-  auto buffer = std::array<char, 512>{};
-  auto source = sockaddr_in{};
-#if defined(_WIN32)
-  auto source_size = static_cast<int>(sizeof(source));
-  const auto received = recvfrom(socket, buffer.data(), static_cast<int>(buffer.size() - 1), 0,
-                                 reinterpret_cast<sockaddr*>(&source), &source_size);
-#else
-  auto source_size = socklen_t{sizeof(source)};
-  const auto received = recvfrom(socket, buffer.data(), buffer.size() - 1, 0,
-                                 reinterpret_cast<sockaddr*>(&source), &source_size);
-#endif
-  if (received <= 0) {
-    return;
-  }
-  const auto source_host = ipv4_to_string(source);
-  if (auto parsed = parse_discovery_response(
-          std::string_view{buffer.data(), static_cast<std::size_t>(received)}, source_host)) {
-    if (std::none_of(candidates.begin(), candidates.end(),
-                     [&](const auto& candidate) { return candidate.host == parsed->host; })) {
-      candidates.push_back(*parsed);
-    }
-  }
-}
-
-DiscoveredReceiver discover_receiver(std::uint16_t discovery_port,
-                                     std::chrono::milliseconds timeout, bool allow_lan) {
-  ensure_socket_runtime();
-
-  const auto request = std::string{"HLINK_DISCOVER_V1 hyperlink-file"};
-  auto targets = interface_discovery_targets();
-  add_discovery_target(targets, "127.0.0.1", "127.0.0.1");
-
-  auto active_sockets = open_discovery_sockets(targets, discovery_port, request);
-
-  auto fallback_socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
-  if (fallback_socket.valid()) {
-    set_broadcast(fallback_socket.get());
-    set_socket_timeout(fallback_socket.get(), std::chrono::milliseconds{100});
-  }
-  for (const auto& destination : {"255.255.255.255", "169.254.255.255", "127.0.0.1"}) {
-    if (!fallback_socket.valid()) {
-      continue;
-    }
-    const auto address = make_ipv4_address(destination, discovery_port);
-    static_cast<void>(sendto(fallback_socket.get(), request.data(),
-                             static_cast<int>(request.size()), 0,
-                             reinterpret_cast<const sockaddr*>(&address), sizeof(address)));
-  }
-
-  if (active_sockets.empty() && !fallback_socket.valid()) {
-    throw std::runtime_error("failed to create discovery socket: " + socket_error());
-  }
-
-  auto candidates = std::vector<DiscoveredReceiver>{};
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  auto first_response_deadline = std::optional<std::chrono::steady_clock::time_point>{};
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (fallback_socket.valid()) {
-      collect_discovery_responses(fallback_socket.get(), candidates);
-    }
-    for (const auto& active_socket : active_sockets) {
-      collect_discovery_responses(active_socket.socket.get(), candidates);
-    }
-
-    if (std::any_of(candidates.begin(), candidates.end(), [](const auto& candidate) {
-          return discovery_preference(candidate.host) == 0;
-        })) {
-      break;
-    }
-
-    if (!candidates.empty()) {
-      if (!first_response_deadline) {
-        first_response_deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds{350};
-      }
-    }
-
-    if (first_response_deadline && std::chrono::steady_clock::now() >= *first_response_deadline) {
-      break;
-    }
-  }
-
-  if (!candidates.empty()) {
-    const auto best = *std::min_element(candidates.begin(), candidates.end(), [](const auto& left,
-                                                                                 const auto& right) {
-      return discovery_preference(left.host) < discovery_preference(right.host);
-    });
-    if (!allow_lan && !is_link_local_ipv4(best.host) && best.host.rfind("127.", 0) != 0) {
-      throw std::runtime_error(
-          "auto-discovery only found LAN/Wi-Fi receiver address(es): " +
-          candidate_hosts(candidates) +
-          ". Connect over USB4/Thunderbolt, then rerun with --host <receiver-169.254.x.x>. "
-          "Use --allow-lan only if you intentionally want Wi-Fi/LAN.");
-    }
-    return best;
-  }
-
-  throw std::runtime_error("no Hyperlink receiver discovered");
-}
-
-class DiscoveryResponder {
-public:
-  DiscoveryResponder(const Options& options)
-      : discovery_port_(options.discovery_port), transfer_port_(options.port),
-        parallel_(options.parallel), name_(local_receiver_name()) {}
-
-  ~DiscoveryResponder() { stop(); }
-
-  void start() {
-    running_ = true;
-    thread_ = std::thread{[this] { run(); }};
-  }
-
-  void stop() {
-    running_ = false;
-    if (thread_.joinable()) {
-      thread_.join();
-    }
-  }
-
-private:
-  void run() {
-    try {
-      ensure_socket_runtime();
-      auto socket = UdpSocketHandle{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
-      if (!socket.valid()) {
-        return;
-      }
-      set_reuse_address(socket.get());
-      set_socket_timeout(socket.get(), std::chrono::milliseconds{500});
-
-      auto bind_address = sockaddr_in{};
-      bind_address.sin_family = AF_INET;
-      bind_address.sin_port = htons(discovery_port_);
-      bind_address.sin_addr.s_addr = htonl(INADDR_ANY);
-      if (bind(socket.get(), reinterpret_cast<const sockaddr*>(&bind_address),
-               sizeof(bind_address)) != 0) {
-        return;
-      }
-
-      const auto response = "HLINK_FILE_V1 " + std::to_string(transfer_port_) + " " +
-                            std::to_string(parallel_) + " " + name_;
-      while (running_) {
-        auto buffer = std::array<char, 512>{};
-        auto source = sockaddr_in{};
-#if defined(_WIN32)
-        auto source_size = static_cast<int>(sizeof(source));
-        const auto received =
-            recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size() - 1), 0,
-                     reinterpret_cast<sockaddr*>(&source), &source_size);
-#else
-        auto source_size = socklen_t{sizeof(source)};
-        const auto received = recvfrom(socket.get(), buffer.data(), buffer.size() - 1, 0,
-                                       reinterpret_cast<sockaddr*>(&source), &source_size);
-#endif
-        if (received <= 0) {
-          continue;
-        }
-        const auto request = std::string_view{buffer.data(), static_cast<std::size_t>(received)};
-        if (request.find("HLINK_DISCOVER_V1") != 0) {
-          continue;
-        }
-        sendto(socket.get(), response.data(), static_cast<int>(response.size()), 0,
-               reinterpret_cast<const sockaddr*>(&source), source_size);
-      }
-    } catch (...) {
-    }
-  }
-
-  std::uint16_t discovery_port_{kDefaultDiscoveryPort};
-  std::uint16_t transfer_port_{kDefaultPort};
-  std::uint32_t parallel_{1};
-  std::string name_;
-  std::atomic_bool running_{false};
-  std::thread thread_;
-};
 
 void write_u64_be(std::span<std::byte> buffer, std::uint64_t value) {
   for (auto index = std::size_t{0}; index < 8; ++index) {
@@ -1106,18 +564,19 @@ int run_send(const Options& options) {
   if (effective_options.auto_discover) {
     std::cout << "Discovering Hyperlink receiver on UDP port " << effective_options.discovery_port
               << "...\n";
-    const auto receiver =
-        discover_receiver(effective_options.discovery_port, std::chrono::milliseconds{2500},
-                          effective_options.allow_lan);
-    effective_options.host = receiver.host;
-    effective_options.port = receiver.port;
-    effective_options.parallel = receiver.parallel;
-    std::cout << "Discovered " << receiver.name << " at " << receiver.host << ":" << receiver.port
-              << " with " << receiver.parallel << " stream(s)\n";
-    if (discovery_preference(receiver.host) > 0 && receiver.host.rfind("127.", 0) != 0) {
-      std::cerr << "warning: discovered a non-link-local address. If this is using Wi-Fi/LAN, "
-                   "rerun with --host <169.254.x.x> for the USB4/Thunderbolt link.\n";
+    const auto receiver = hyperlink::PeerDiscovery{}.select_fastest(
+        {.discovery_port = effective_options.discovery_port});
+    effective_options.host = receiver.endpoint.host;
+    effective_options.port = receiver.endpoint.transfer_port;
+    effective_options.parallel = receiver.endpoint.parallel_streams;
+    if (static_cast<std::uint64_t>(effective_options.port) +
+            static_cast<std::uint64_t>(effective_options.parallel) - 1ULL >
+        65535ULL) {
+      throw std::runtime_error("discovered peer port plus parallel stream count exceeds 65535");
     }
+    std::cout << "Discovered " << receiver.display_name << " at " << effective_options.host << ":"
+              << effective_options.port << " with " << effective_options.parallel << " stream(s), "
+              << receiver.measured_bytes_per_second << " bytes/s probe throughput\n";
   }
 
   if (!std::filesystem::exists(effective_options.file)) {
@@ -1522,9 +981,14 @@ void receive_file_part(const Options& options, std::uint32_t stream, ReceiveShar
 
 int run_receive(const Options& options) {
   std::filesystem::create_directories(options.output_dir);
-  auto responder = std::optional<DiscoveryResponder>{};
+  auto responder = std::optional<hyperlink::PeerDiscoveryResponder>{};
   if (options.advertise) {
-    responder.emplace(options);
+    responder.emplace(hyperlink::PeerDiscoveryResponderOptions{
+        .bind_host = options.host,
+        .transfer_port = options.port,
+        .discovery_port = options.discovery_port,
+        .parallel_streams = options.parallel,
+    });
     responder->start();
     std::cout << "Advertising receiver on UDP port " << options.discovery_port << '\n';
   }
