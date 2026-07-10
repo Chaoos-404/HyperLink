@@ -1,4 +1,4 @@
-#include "hyperlink/peer_discovery.hpp"
+#include "peer_discovery_internal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -42,6 +42,7 @@ constexpr std::string_view kDiscoveryMessage = "HLINK_DISCOVER_V2";
 using NativeSocket = SOCKET;
 constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
 using SocketLength = int;
+using InetAddressLength = DWORD;
 
 class WinsockRuntime {
 public:
@@ -72,6 +73,7 @@ void close_socket(NativeSocket socket) {
 using NativeSocket = int;
 constexpr NativeSocket kInvalidSocket = -1;
 using SocketLength = socklen_t;
+using InetAddressLength = socklen_t;
 
 void ensure_socket_runtime() {}
 
@@ -111,7 +113,7 @@ struct DiscoveryTarget {
 
 [[nodiscard]] std::string ipv4_string(const in_addr& address) {
   std::array<char, INET_ADDRSTRLEN> output{};
-  return inet_ntop(AF_INET, &address, output.data(), static_cast<socklen_t>(output.size())) != nullptr
+  return inet_ntop(AF_INET, &address, output.data(), static_cast<InetAddressLength>(output.size())) != nullptr
              ? std::string{output.data()}
              : std::string{};
 }
@@ -294,7 +296,10 @@ template <typename Integer>
   if (left.source_address != right.source_address) {
     return left.source_address < right.source_address;
   }
-  return left.endpoint.transfer_port < right.endpoint.transfer_port;
+  if (left.endpoint.transfer_port != right.endpoint.transfer_port) {
+    return left.endpoint.transfer_port < right.endpoint.transfer_port;
+  }
+  return left.endpoint.probe_port < right.endpoint.probe_port;
 }
 
 [[nodiscard]] std::vector<DiscoveredPeer> deduplicate_candidates(
@@ -495,21 +500,27 @@ DiscoveredPeer PeerDiscovery::select_fastest(const PeerDiscoveryOptions& options
 
 std::unique_ptr<Transport> PeerDiscovery::connect_fastest(const PeerDiscoveryOptions& options,
                                                            TcpEndpoint endpoint) {
-  const auto peer = select_fastest(options);
-  endpoint.host = peer.endpoint.host;
-  endpoint.port = peer.endpoint.transfer_port;
-  return make_tcp_client_transport(std::move(endpoint));
+  return make_tcp_client_transport(detail::selected_tcp_endpoint_for_testing(endpoint,
+                                                                              select_fastest(options)));
 }
 
-DiscoveredPeer PeerDiscoveryTestHarness::select_fastest() {
+TcpEndpoint detail::selected_tcp_endpoint_for_testing(TcpEndpoint endpoint,
+                                                       const DiscoveredPeer& peer) {
+  endpoint.host = peer.endpoint.host;
+  endpoint.port = peer.endpoint.transfer_port;
+  return endpoint;
+}
+
+DiscoveredPeer detail::PeerDiscoveryTestHarness::select_fastest() {
   return discover_and_rank(PeerDiscoveryOptions{}, [this](const PeerDiscoveryOptions&) -> const auto& {
     return replies;
   }, [this](const DiscoveredPeer& peer) {
-    probed_hosts.push_back(peer.endpoint.host);
-    if (const auto failure = probe_failures.find(peer.endpoint.host); failure != probe_failures.end()) {
+    const auto key = detail::ProbeEndpointKey{peer.endpoint.host, peer.endpoint.probe_port};
+    probed_endpoints.push_back(key);
+    if (const auto failure = probe_failures.find(key); failure != probe_failures.end()) {
       throw std::runtime_error(failure->second);
     }
-    if (const auto rate = probe_rates.find(peer.endpoint.host); rate != probe_rates.end()) return rate->second;
+    if (const auto rate = probe_rates.find(key); rate != probe_rates.end()) return rate->second;
     throw std::runtime_error("no probe rate configured");
   });
 }

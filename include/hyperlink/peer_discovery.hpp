@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -46,15 +45,6 @@ public:
   [[nodiscard]] DiscoveredPeer select_fastest(const PeerDiscoveryOptions& options);
   [[nodiscard]] std::unique_ptr<Transport> connect_fastest(const PeerDiscoveryOptions& options,
                                                             TcpEndpoint endpoint);
-};
-
-struct HYPERLINK_API PeerDiscoveryTestHarness {
-  std::vector<std::pair<std::string, std::string>> replies;
-  std::map<std::string, double> probe_rates;
-  std::map<std::string, std::string> probe_failures;
-  std::vector<std::string> probed_hosts;
-
-  [[nodiscard]] DiscoveredPeer select_fastest();
 };
 
 [[nodiscard]] HYPERLINK_API std::optional<DiscoveredPeer> parse_peer_advertisement_for_testing(
