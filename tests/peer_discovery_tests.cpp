@@ -20,6 +20,10 @@ void rejects_invalid_v2_response() {
       "HLINK_PEER_V2 47790 47791 0 receiver", "192.168.1.2"));
   assert(!hyperlink::parse_peer_advertisement_for_testing(
       std::string(513, 'a'), "192.168.1.2"));
+  assert(!hyperlink::parse_peer_advertisement_for_testing(
+      "HLINK_PEER_V2 47790 47791 8 receiver", "not-an-ipv4-address"));
+  assert(!hyperlink::parse_peer_advertisement_for_testing(
+      "HLINK_PEER_V2 47790 47791 8 receiver", "1.2.3.4."));
 }
 
 void chooses_highest_rate_then_stable_tie_breaker() {

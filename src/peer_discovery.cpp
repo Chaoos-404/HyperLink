@@ -38,19 +38,19 @@ template <typename Integer>
   std::array<unsigned int, 4> octets{};
   std::size_t position = 0;
 
-  for (auto& octet : octets) {
+  for (std::size_t index = 0; index < octets.size(); ++index) {
     const auto separator = address.find('.', position);
+    if ((index + 1 == octets.size()) != (separator == std::string_view::npos)) {
+      return std::nullopt;
+    }
     const auto part = address.substr(position, separator - position);
     const auto parsed = parse_decimal<unsigned int>(part);
     if (!parsed || *parsed > 255) {
       return std::nullopt;
     }
-    octet = *parsed;
+    octets[index] = *parsed;
 
-    if (separator == std::string_view::npos) {
-      if (&octet != &octets.back()) {
-        return std::nullopt;
-      }
+    if (index + 1 == octets.size()) {
       position = address.size();
     } else {
       position = separator + 1;
@@ -77,7 +77,8 @@ template <typename Integer>
 
 std::optional<DiscoveredPeer> parse_peer_advertisement_for_testing(std::string_view message,
                                                                     std::string_view source_address) {
-  if (message.size() > kMaximumAdvertisementBytes || !message.starts_with(kAdvertisementPrefix)) {
+  if (message.size() > kMaximumAdvertisementBytes || !message.starts_with(kAdvertisementPrefix) ||
+      !parse_ipv4(source_address)) {
     return std::nullopt;
   }
 
