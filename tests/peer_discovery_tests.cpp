@@ -73,6 +73,31 @@ void responder_rejects_transfer_port_range_that_overflows_uint32() {
   }
 }
 
+void rejects_oversized_datagram_even_when_its_prefix_is_valid() {
+  const auto valid_advertisement = std::string{"HLINK_PEER_V2 47790 47791 1 "} +
+                                   std::string(484, 'a');
+  assert(valid_advertisement.size() == 512);
+  assert(hyperlink::parse_peer_advertisement_for_testing(valid_advertisement, "127.0.0.1"));
+  assert(hyperlink::detail::discovery_datagram_within_limit_for_testing(
+      valid_advertisement.size()));
+  assert(!hyperlink::detail::discovery_datagram_within_limit_for_testing(
+      valid_advertisement.size() + 1));
+}
+
+void stalled_probe_client_does_not_block_a_second_probe() {
+  auto responder = hyperlink::PeerDiscoveryResponder{
+      {.bind_host = "127.0.0.1", .transfer_port = 47860, .probe_port = 47861,
+       .discovery_port = 47859, .display_name = "concurrent"}};
+  responder.start();
+  auto stalled = hyperlink::make_tcp_client_transport({.host = "127.0.0.1", .port = 47861});
+  assert(stalled);
+  const auto peer = hyperlink::PeerDiscovery{}.select_fastest(
+      {.discovery_port = 47859, .discovery_timeout = std::chrono::milliseconds{500},
+       .probe_timeout = std::chrono::milliseconds{500}});
+  responder.stop();
+  assert(peer.measured_bytes_per_second > 0.0);
+}
+
 void parses_v2_response_and_uses_source_address() {
   const auto peer = hyperlink::parse_peer_advertisement_for_testing(
       "HLINK_PEER_V2 47790 47791 8 receiver", "169.254.10.2");

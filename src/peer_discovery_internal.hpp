@@ -26,4 +26,6 @@ struct PeerDiscoveryTestHarness {
 [[nodiscard]] TcpEndpoint
 selected_tcp_endpoint_for_testing(TcpEndpoint endpoint, const DiscoveredPeer& peer);
 
+[[nodiscard]] bool discovery_datagram_within_limit_for_testing(std::size_t received_bytes);
+
 } // namespace hyperlink::detail

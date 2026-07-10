@@ -37,6 +37,7 @@ namespace hyperlink {
 namespace {
 
 constexpr std::size_t kMaximumAdvertisementBytes = 512;
+constexpr std::size_t kMaximumConcurrentProbeClients = 16;
 constexpr std::string_view kAdvertisementPrefix = "HLINK_PEER_V2 ";
 constexpr std::string_view kDiscoveryMessage = "HLINK_DISCOVER_V2";
 
@@ -194,6 +195,10 @@ void add_target(std::vector<DiscoveryTarget>& targets, std::string bind_address,
   return endpoint;
 }
 
+[[nodiscard]] bool discovery_datagram_within_limit(std::size_t received_bytes) {
+  return received_bytes <= kMaximumAdvertisementBytes;
+}
+
 template <typename TargetProvider>
 [[nodiscard]] std::vector<std::pair<std::string, std::string>>
 receive_discovery_replies(const PeerDiscoveryOptions& options, TargetProvider&& targets) {
@@ -229,9 +234,12 @@ receive_discovery_replies(const PeerDiscoveryOptions& options, TargetProvider&& 
       std::array<char, kMaximumAdvertisementBytes + 1> buffer{};
       sockaddr_in source{};
       SocketLength source_length = sizeof(source);
-      const auto received = recvfrom(socket.get(), buffer.data(), static_cast<int>(kMaximumAdvertisementBytes), 0,
+      const auto received = recvfrom(socket.get(), buffer.data(), static_cast<int>(buffer.size()), 0,
                                      reinterpret_cast<sockaddr*>(&source), &source_length);
-      if (received > 0) replies.emplace_back(std::string{buffer.data(), static_cast<std::size_t>(received)}, ipv4_string(source.sin_addr));
+      if (received > 0 && discovery_datagram_within_limit(static_cast<std::size_t>(received))) {
+        replies.emplace_back(std::string{buffer.data(), static_cast<std::size_t>(received)},
+                             ipv4_string(source.sin_addr));
+      }
     }
   }
   return replies;
@@ -531,47 +539,74 @@ private:
   }
 
   void serve_probes(SocketHandle socket) {
+    struct ActiveProbe {
+      SocketHandle socket;
+      std::chrono::steady_clock::time_point deadline;
+    };
+
+    auto active_clients = std::vector<ActiveProbe>{};
     while (running_) {
       fd_set readable;
+      fd_set writable;
       FD_ZERO(&readable);
+      FD_ZERO(&writable);
       FD_SET(socket.get(), &readable);
+      auto highest = socket.get();
+      for (const auto& client : active_clients) {
+        FD_SET(client.socket.get(), &writable);
+        highest = std::max(highest, client.socket.get());
+      }
       auto timeout = timeval{.tv_sec = 0, .tv_usec = 100000};
-      if (select(static_cast<int>(socket.get() + 1), &readable, nullptr, nullptr, &timeout) <= 0 ||
-          !FD_ISSET(socket.get(), &readable)) continue;
-      sockaddr_in source{};
-      SocketLength source_length = sizeof(source);
-      auto client = SocketHandle{accept(socket.get(), reinterpret_cast<sockaddr*>(&source), &source_length)};
-      if (client.valid()) serve_probe_client(client.get());
+      const auto ready = select(static_cast<int>(highest + 1), &readable, &writable, nullptr,
+                                &timeout);
+      if (ready > 0 && FD_ISSET(socket.get(), &readable)) {
+        while (running_) {
+          sockaddr_in source{};
+          SocketLength source_length = sizeof(source);
+          auto client = SocketHandle{
+              accept(socket.get(), reinterpret_cast<sockaddr*>(&source), &source_length)};
+          if (!client.valid()) break;
+          if (active_clients.size() >= kMaximumConcurrentProbeClients) continue;
+          set_nonblocking(client.get());
+          active_clients.push_back(
+              {.socket = std::move(client),
+               .deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1}});
+        }
+      }
+      const auto now = std::chrono::steady_clock::now();
+      active_clients.erase(std::remove_if(active_clients.begin(), active_clients.end(),
+                                          [&](const ActiveProbe& client) {
+                                            return client.deadline <= now;
+                                          }),
+                           active_clients.end());
+      if (ready > 0) {
+        active_clients.erase(std::remove_if(active_clients.begin(), active_clients.end(),
+                                            [&](const ActiveProbe& client) {
+                                              return FD_ISSET(client.socket.get(), &writable) &&
+                                                     !send_probe_bytes(client.socket.get());
+                                            }),
+                             active_clients.end());
+      }
     }
   }
 
-  void serve_probe_client(NativeSocket client) const {
-    set_nonblocking(client);
+  [[nodiscard]] bool send_probe_bytes(NativeSocket client) const {
     static const auto buffer = std::array<std::byte, 64 * 1024>{};
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
-    while (std::chrono::steady_clock::now() < deadline) {
-      try {
-        wait_for_socket(client, true, deadline);
-      } catch (...) {
-        return;
-      }
-      const auto sent = send(client, reinterpret_cast<const char*>(buffer.data()),
-                             static_cast<int>(buffer.size()),
+    const auto sent = send(client, reinterpret_cast<const char*>(buffer.data()),
+                           static_cast<int>(buffer.size()),
 #if defined(_WIN32)
-                             0
+                           0
 #else
-                             MSG_NOSIGNAL
+                           MSG_NOSIGNAL
 #endif
-      );
-      if (sent > 0) continue;
-      if (sent == 0) return;
+    );
+    if (sent > 0) return true;
+    if (sent == 0) return false;
 #if defined(_WIN32)
-      if (WSAGetLastError() == WSAEWOULDBLOCK) continue;
+    return WSAGetLastError() == WSAEWOULDBLOCK;
 #else
-      if (errno == EWOULDBLOCK || errno == EAGAIN) continue;
+    return errno == EWOULDBLOCK || errno == EAGAIN;
 #endif
-      return;
-    }
   }
 
   PeerDiscoveryResponderOptions options_;
@@ -674,6 +709,10 @@ TcpEndpoint detail::selected_tcp_endpoint_for_testing(TcpEndpoint endpoint,
   endpoint.host = peer.endpoint.host;
   endpoint.port = peer.endpoint.transfer_port;
   return endpoint;
+}
+
+bool detail::discovery_datagram_within_limit_for_testing(std::size_t received_bytes) {
+  return discovery_datagram_within_limit(received_bytes);
 }
 
 DiscoveredPeer detail::PeerDiscoveryTestHarness::select_fastest() {
